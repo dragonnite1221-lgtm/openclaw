@@ -1275,14 +1275,24 @@ export interface UserPreferences {
   value_json: string;
 }
 
+export interface WebPushApprovalDeliveries {
+  approval_id: string;
+  device_id: string;
+  prepared_at_ms: number;
+  subscription_id: string;
+  user_profile_id: string | null;
+}
+
 export interface WebPushSubscriptions {
   auth: string;
   created_at_ms: number;
+  device_id: string | null;
   endpoint: string;
   endpoint_hash: string;
   p256dh: string;
   subscription_id: string;
   updated_at_ms: number;
+  user_profile_id: string | null;
 }
 
 export interface WorkerEnvironmentCredentials {
@@ -1607,6 +1617,7 @@ export interface DB {
   task_delivery_state: TaskDeliveryState;
   task_runs: TaskRuns;
   user_preferences: UserPreferences;
+  web_push_approval_deliveries: WebPushApprovalDeliveries;
   web_push_subscriptions: WebPushSubscriptions;
   worker_environment_credentials: WorkerEnvironmentCredentials;
   worker_environment_ssh_fallback_ports: WorkerEnvironmentSshFallbackPorts;
