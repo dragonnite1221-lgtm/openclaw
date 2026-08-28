@@ -61,6 +61,7 @@ import { resolveProviderApiKeys } from "./models-auth-status-api-keys.js";
 import {
   clearModelAuthStatusUsageCache,
   type ProviderUsageStatus,
+  readProfileUsageStaleWhileRevalidate,
   readProviderUsageStaleWhileRevalidate,
 } from "./models-auth-status-usage-cache.js";
 import type {
@@ -69,6 +70,7 @@ import type {
   ModelAuthOrderSetResult,
   ModelAuthStatusProvider,
   ModelAuthStatusResult,
+  ModelAuthUsage,
   ModelProviderCapability,
 } from "./models-auth-status.types.js";
 import { getProviderUsageRuntimeSnapshot } from "./provider-usage-runtime.js";
@@ -319,6 +321,7 @@ function mapProvider(
   store: AuthProfileStore,
   authAliasLookupParams: ProviderAuthAliasLookupParams,
   usageByProvider: Map<string, ProviderUsageStatus>,
+  usageByProfile: Map<string, ProviderUsageStatus>,
   expectsOAuthSet: Set<string>,
   apiKeys: ReadonlyMap<string, ModelAuthStatusProvider["apiKey"]>,
   logoutProfileIds: ReadonlySet<string>,
@@ -340,7 +343,10 @@ function mapProvider(
   const usageKey = resolveUsageProviderId(prov.provider, {
     credentialType: usageProfile?.type,
   });
-  const usage = usageKey ? usageByProvider.get(usageKey) : undefined;
+  const usage = usageKey
+    ? (usageByProvider.get(usageKey) ??
+      (usageProfile ? usageByProfile.get(usageProfile.profileId) : undefined))
+    : undefined;
   const rawRollup = aggregateRefreshableAuthStatus(
     prov,
     Date.now(),
@@ -388,6 +394,9 @@ function mapProvider(
           : {}),
         ...(includeProfileIdentity && metadata.email ? { email: metadata.email } : {}),
         ...(lastUsedAt ? { lastUsedAt } : {}),
+        ...(usageByProfile.has(prof.profileId)
+          ? { usage: mapUsageStatus(usageByProfile.get(prof.profileId)!) }
+          : {}),
         ...((prof.type === "oauth" || prof.type === "token") &&
         logoutProfileIds.has(prof.profileId) &&
         !configBoundProfileIds.has(prof.profileId)
@@ -398,17 +407,20 @@ function mapProvider(
     ...(profileOrder.order !== undefined ? { profileOrder: profileOrder.order } : {}),
     ...(profileOrder.fromStore ? { profileOrderStored: true } : {}),
     ...(apiKey ? { apiKey } : {}),
-    usage:
-      usage && usageKey
-        ? {
-            providerId: usageKey,
-            windows: usage.windows,
-            ...(usage.summary ? { summary: usage.summary } : {}),
-            ...(usage.plan ? { plan: usage.plan } : {}),
-            ...(usage.billing?.length ? { billing: usage.billing } : {}),
-            ...(usage.accountEmail ? { accountEmail: usage.accountEmail } : {}),
-          }
-        : undefined,
+    usage: usage && usageKey ? mapUsageStatus(usage) : undefined,
+  };
+}
+
+function mapUsageStatus(usage: ProviderUsageStatus): ModelAuthUsage {
+  return {
+    providerId: usage.providerId,
+    windows: usage.windows,
+    ...(usage.summary ? { summary: usage.summary } : {}),
+    ...(usage.plan ? { plan: usage.plan } : {}),
+    ...(usage.billing?.length ? { billing: usage.billing } : {}),
+    ...(usage.costHistory ? { costHistory: usage.costHistory } : {}),
+    ...(usage.accountEmail ? { accountEmail: usage.accountEmail } : {}),
+    ...(usage.error ? { error: usage.error } : {}),
   };
 }
 
@@ -768,19 +780,19 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
         authAliasLookupParams,
       });
 
-      // Usage queries usually need refreshable credentials. Keep API-key status
-      // enrichment explicit so static auth providers are not polled by default.
+      // OAuth/token usage is fetched once per exact profile below; the first
+      // account also backs the legacy provider summary. Only provider-wide API
+      // key usage needs this separate cache read.
       const usageProviderIds = [
         ...new Set(
           authHealth.profiles
             .filter((p) => {
-              if (p.type === "oauth" || p.type === "token") {
-                return true;
-              }
               const usageProvider = resolveUsageProviderId(p.provider, {
                 credentialType: p.type,
               });
-              return usageProvider ? apiKeyUsageStatusProviders.has(usageProvider) : false;
+              return p.type === "api_key" && usageProvider
+                ? apiKeyUsageStatusProviders.has(usageProvider)
+                : false;
             })
             .map((p) => resolveUsageProviderId(p.provider, { credentialType: p.type }))
             .filter((id): id is UsageProviderId => Boolean(id)),
@@ -803,6 +815,25 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
         providerIds: usageProviderIds,
         now,
       });
+      const profileUsage = readProfileUsageStaleWhileRevalidate({
+        agentId,
+        agentDir,
+        workspaceDir,
+        authStore: providerUsageRuntime.store,
+        configRef: cfg,
+        credentialKey: providerUsageRuntime.credentialKey,
+        forceRefresh: refreshRequested,
+        targets: authHealth.profiles.flatMap((profile) => {
+          if (profile.type !== "oauth" && profile.type !== "token") {
+            return [];
+          }
+          const providerId = resolveUsageProviderId(profile.provider, {
+            credentialType: profile.type,
+          });
+          return providerId ? [{ profileId: profile.profileId, providerId }] : [];
+        }),
+        now,
+      });
 
       const externalProfileIds = new Set(store.runtimeExternalProfileIds ?? []);
       const externalCliProfileIds = new Set(getRuntimeExternalCliProfileIds(store));
@@ -823,6 +854,7 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
           store,
           authAliasLookupParams,
           usageByProvider,
+          profileUsage.usageByProfile,
           configured.expectsOAuth,
           apiKeys,
           logoutProfileIds,
@@ -836,7 +868,12 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
         workspaceDir,
         metadataSnapshot: preparedSnapshot.metadataSnapshot,
       });
-      const result: ModelAuthStatusResult = { ts: now, providers, providerCapabilities };
+      const result: ModelAuthStatusResult = {
+        ts: now,
+        providers,
+        providerCapabilities,
+        ...(profileUsage.refreshPending ? { usageRefreshPending: true } : {}),
+      };
       respond(true, result, undefined);
     } catch (err) {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));

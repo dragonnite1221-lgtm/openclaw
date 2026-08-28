@@ -9,7 +9,11 @@ import {
 import { formatErrorMessage } from "./errors.js";
 import { resolveFetch } from "./fetch.js";
 import { resolveProxyFetchFromEnv } from "./net/proxy-fetch.js";
-import { type ProviderAuth, resolveProviderAuths } from "./provider-usage.auth.js";
+import {
+  type ProviderAuth,
+  resolveProviderAuths,
+  resolveProviderProfileUsageAuth,
+} from "./provider-usage.auth.js";
 import {
   PROVIDER_USAGE_TIMEOUT_MS,
   ignoredErrors,
@@ -43,6 +47,7 @@ type UsageSummaryOptions = {
   timeoutMs?: number;
   providers?: UsageProviderId[];
   auth?: ProviderAuth[];
+  authProfile?: { provider: UsageProviderId; profileId: string };
   authStore?: AuthProfileStore;
   agentDir?: string;
   workspaceDir?: string;
@@ -106,21 +111,28 @@ export async function loadProviderUsageSummary(
     throw new Error("fetch is not available");
   }
 
-  const descriptors: ProviderUsagePluginDescriptor[] = opts.providers
-    ? opts.providers.map((provider) => ({
-        provider,
-        displayName: providerUsageLabel(provider) ?? provider,
-      }))
-    : opts.auth
-      ? opts.auth.map((auth) => ({
-          provider: auth.provider,
-          displayName: providerUsageLabel(auth.provider) ?? auth.provider,
+  const descriptors: ProviderUsagePluginDescriptor[] = opts.authProfile
+    ? [
+        {
+          provider: opts.authProfile.provider,
+          displayName: providerUsageLabel(opts.authProfile.provider) ?? opts.authProfile.provider,
+        },
+      ]
+    : opts.providers
+      ? opts.providers.map((provider) => ({
+          provider,
+          displayName: providerUsageLabel(provider) ?? provider,
         }))
-      : listProviderUsagePluginDescriptors({
-          config,
-          workspaceDir: opts.workspaceDir,
-          env,
-        });
+      : opts.auth
+        ? opts.auth.map((auth) => ({
+            provider: auth.provider,
+            displayName: providerUsageLabel(auth.provider) ?? auth.provider,
+          }))
+        : listProviderUsagePluginDescriptors({
+            config,
+            workspaceDir: opts.workspaceDir,
+            env,
+          });
   const displayNames = new Map(
     descriptors.map((descriptor) => [descriptor.provider, descriptor.displayName]),
   );
@@ -138,21 +150,29 @@ export async function loadProviderUsageSummary(
     return raceUsageTimeout(
       (async () => {
         let authError: unknown;
-        const auth =
-          opts.auth?.find((candidate) => candidate.provider === provider) ??
-          (
-            await resolveProviderAuths({
-              providers: [provider],
+        const auth = opts.authProfile
+          ? await resolveProviderProfileUsageAuth({
+              provider,
+              profileId: opts.authProfile.profileId,
+              store: getAuthStore(),
               agentDir: opts.agentDir,
               config,
               env,
-              getStore: getAuthStore,
-              store: opts.authStore,
-              onError: (_provider, error) => {
-                authError = error;
-              },
             })
-          )[0];
+          : (opts.auth?.find((candidate) => candidate.provider === provider) ??
+            (
+              await resolveProviderAuths({
+                providers: [provider],
+                agentDir: opts.agentDir,
+                config,
+                env,
+                getStore: getAuthStore,
+                store: opts.authStore,
+                onError: (_provider, error) => {
+                  authError = error;
+                },
+              })
+            )[0]);
         if (authError) {
           const message = formatErrorMessage(authError);
           return failureSnapshot(provider, message.trim() || "Auth failed");

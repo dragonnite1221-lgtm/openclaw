@@ -20,8 +20,13 @@ const USAGE_CACHE_TTL_MS = 60_000;
 
 export type ProviderUsageStatus = Pick<
   ProviderUsageSnapshot,
-  "windows" | "summary" | "plan" | "billing" | "accountEmail"
->;
+  "windows" | "summary" | "plan" | "billing" | "costHistory" | "accountEmail" | "error"
+> & { providerId: UsageProviderId };
+
+type UsageCacheRead = {
+  usageByProvider: Map<string, ProviderUsageStatus>;
+  refreshPending: boolean;
+};
 
 type ProviderUsageCacheEntry = {
   agentDir: string;
@@ -89,11 +94,14 @@ function mapProviderUsage(usage: Awaited<ReturnType<typeof loadProviderUsageSumm
   const usageByProvider = new Map<string, ProviderUsageStatus>();
   for (const snap of usage.providers) {
     usageByProvider.set(snap.provider, {
+      providerId: snap.provider,
       windows: snap.windows,
       ...(snap.summary ? { summary: snap.summary } : {}),
       ...(snap.plan ? { plan: snap.plan } : {}),
       ...(snap.billing?.length ? { billing: snap.billing } : {}),
+      ...(snap.costHistory ? { costHistory: snap.costHistory } : {}),
       ...(snap.accountEmail ? { accountEmail: snap.accountEmail } : {}),
+      ...(snap.error ? { error: snap.error } : {}),
     });
   }
   return usageByProvider;
@@ -126,16 +134,18 @@ function retainLastGoodOnTimeout(
 }
 
 function scheduleProviderUsageRefresh(params: {
-  agentId: string;
+  cacheOwnerKey: string;
   agentDir: string;
+  workspaceDir?: string;
   authStore?: AuthProfileStore;
+  authProfile?: { provider: UsageProviderId; profileId: string };
   configRef: OpenClawConfig;
   credentialKey: string;
   providerIds: UsageProviderId[];
   providerKey: string;
   lastGood?: UsageSummary;
 }): Promise<UsageSummary> {
-  const active = usageRefreshByAgentId.get(params.agentId);
+  const active = usageRefreshByAgentId.get(params.cacheOwnerKey);
   if (
     active?.agentDir === params.agentDir &&
     active.configRef === params.configRef &&
@@ -147,7 +157,9 @@ function scheduleProviderUsageRefresh(params: {
   const publishGeneration = cacheGeneration;
   const promise = loadProviderUsageSummary({
     providers: params.providerIds,
+    ...(params.authProfile ? { authProfile: params.authProfile } : {}),
     agentDir: params.agentDir,
+    workspaceDir: params.workspaceDir,
     authStore: params.authStore,
     config: params.configRef,
     timeoutMs: PROVIDER_USAGE_TIMEOUT_MS,
@@ -156,9 +168,9 @@ function scheduleProviderUsageRefresh(params: {
       const usage = retainLastGoodOnTimeout(freshUsage, params.lastGood);
       if (
         publishGeneration === cacheGeneration &&
-        usageRefreshByAgentId.get(params.agentId) === refresh
+        usageRefreshByAgentId.get(params.cacheOwnerKey) === refresh
       ) {
-        usageCacheByAgentId.set(params.agentId, {
+        usageCacheByAgentId.set(params.cacheOwnerKey, {
           agentDir: params.agentDir,
           configRef: params.configRef,
           credentialKey: params.credentialKey,
@@ -180,8 +192,8 @@ function scheduleProviderUsageRefresh(params: {
       throw err;
     })
     .finally(() => {
-      if (usageRefreshByAgentId.get(params.agentId) === refresh) {
-        usageRefreshByAgentId.delete(params.agentId);
+      if (usageRefreshByAgentId.get(params.cacheOwnerKey) === refresh) {
+        usageRefreshByAgentId.delete(params.cacheOwnerKey);
       }
     });
   const refresh: ProviderUsageRefresh = {
@@ -191,14 +203,17 @@ function scheduleProviderUsageRefresh(params: {
     providerKey: params.providerKey,
     promise,
   };
-  usageRefreshByAgentId.set(params.agentId, refresh);
+  usageRefreshByAgentId.set(params.cacheOwnerKey, refresh);
   return promise;
 }
 
 type ProviderUsageCacheParams = {
   agentId: string;
   agentDir: string;
+  workspaceDir?: string;
   authStore?: AuthProfileStore;
+  authProfile?: { provider: UsageProviderId; profileId: string };
+  cacheOwnerKey?: string;
   configRef: OpenClawConfig;
   credentialKey: string;
   coldRead?: "refresh-marker";
@@ -208,10 +223,11 @@ type ProviderUsageCacheParams = {
 };
 
 function resolveProviderUsageCacheRead(params: ProviderUsageCacheParams) {
+  const cacheOwnerKey = params.cacheOwnerKey ?? params.agentId;
   const providerIds = params.providerIds.toSorted();
   const providerKey = providerUsageCacheKey(providerIds);
   const credentialKey = scopeProviderUsageCredentialKey(params.credentialKey, providerIds);
-  const cached = usageCacheByAgentId.get(params.agentId);
+  const cached = usageCacheByAgentId.get(cacheOwnerKey);
   const matching =
     cached?.agentDir === params.agentDir &&
     cached.configRef === params.configRef &&
@@ -223,15 +239,14 @@ function resolveProviderUsageCacheRead(params: ProviderUsageCacheParams) {
     params.forceRefresh === true ||
     !matching ||
     params.now - matching.refreshedAt >= USAGE_CACHE_TTL_MS;
-  return { credentialKey, matching, needsRefresh, providerIds, providerKey };
+  return { cacheOwnerKey, credentialKey, matching, needsRefresh, providerIds, providerKey };
 }
 
-export function readProviderUsageStaleWhileRevalidate(
-  params: ProviderUsageCacheParams,
-): Map<string, ProviderUsageStatus> {
+function readUsageCacheStaleWhileRevalidate(params: ProviderUsageCacheParams): UsageCacheRead {
+  const cacheOwnerKey = params.cacheOwnerKey ?? params.agentId;
   if (params.providerIds.length === 0) {
-    usageCacheByAgentId.delete(params.agentId);
-    return new Map();
+    usageCacheByAgentId.delete(cacheOwnerKey);
+    return { usageByProvider: new Map(), refreshPending: false };
   }
   const { credentialKey, matching, needsRefresh, providerIds, providerKey } =
     resolveProviderUsageCacheRead(params);
@@ -239,9 +254,11 @@ export function readProviderUsageStaleWhileRevalidate(
     // Never couple the RPC deadline to provider HTTP. A cold call returns auth
     // without usage; stale calls return the last snapshot while one refresh runs.
     void scheduleProviderUsageRefresh({
-      agentId: params.agentId,
+      cacheOwnerKey,
       agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
       authStore: params.authStore,
+      authProfile: params.authProfile,
       configRef: params.configRef,
       credentialKey,
       providerIds,
@@ -249,15 +266,69 @@ export function readProviderUsageStaleWhileRevalidate(
       lastGood: matching?.summary,
     }).catch(() => {});
   }
-  return matching?.usageByProvider ?? new Map();
+  return {
+    usageByProvider: matching?.usageByProvider ?? new Map(),
+    refreshPending: needsRefresh || usageRefreshByAgentId.has(cacheOwnerKey),
+  };
+}
+
+export function readProviderUsageStaleWhileRevalidate(
+  params: ProviderUsageCacheParams,
+): Map<string, ProviderUsageStatus> {
+  return readUsageCacheStaleWhileRevalidate(params).usageByProvider;
+}
+
+export function readProfileUsageStaleWhileRevalidate(params: {
+  agentId: string;
+  agentDir: string;
+  workspaceDir: string;
+  authStore: AuthProfileStore;
+  configRef: OpenClawConfig;
+  credentialKey: string;
+  forceRefresh?: boolean;
+  targets: Array<{ profileId: string; providerId: UsageProviderId }>;
+  now: number;
+}): { usageByProfile: Map<string, ProviderUsageStatus>; refreshPending: boolean } {
+  const usageByProfile = new Map<string, ProviderUsageStatus>();
+  let refreshPending = false;
+  const ownerPrefix = `${params.agentId}\0profile\0`;
+  const activeOwners = new Set(params.targets.map((target) => `${ownerPrefix}${target.profileId}`));
+  for (const ownerKey of usageCacheByAgentId.keys()) {
+    if (ownerKey.startsWith(ownerPrefix) && !activeOwners.has(ownerKey)) {
+      usageCacheByAgentId.delete(ownerKey);
+      usageRefreshByAgentId.delete(ownerKey);
+    }
+  }
+  for (const target of params.targets) {
+    const read = readUsageCacheStaleWhileRevalidate({
+      agentId: params.agentId,
+      agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
+      authStore: params.authStore,
+      authProfile: { provider: target.providerId, profileId: target.profileId },
+      cacheOwnerKey: `${ownerPrefix}${target.profileId}`,
+      configRef: params.configRef,
+      credentialKey: params.credentialKey,
+      forceRefresh: params.forceRefresh,
+      providerIds: [target.providerId],
+      now: params.now,
+    });
+    const usage = read.usageByProvider.get(target.providerId);
+    if (usage) {
+      usageByProfile.set(target.profileId, usage);
+    }
+    refreshPending ||= read.refreshPending;
+  }
+  return { usageByProfile, refreshPending };
 }
 
 /** Returns cached provider usage while network refreshes run in the background for capable clients. */
 async function loadProviderUsageSummaryStaleWhileRevalidate(
   params: ProviderUsageCacheParams,
 ): Promise<UsageSummary> {
+  const cacheOwnerKey = params.cacheOwnerKey ?? params.agentId;
   if (params.providerIds.length === 0) {
-    usageCacheByAgentId.delete(params.agentId);
+    usageCacheByAgentId.delete(cacheOwnerKey);
     return { updatedAt: params.now, providers: [] };
   }
   const { credentialKey, matching, needsRefresh, providerIds, providerKey } =
@@ -266,9 +337,11 @@ async function loadProviderUsageSummaryStaleWhileRevalidate(
     return matching.summary;
   }
   const refresh = scheduleProviderUsageRefresh({
-    agentId: params.agentId,
+    cacheOwnerKey,
     agentDir: params.agentDir,
+    workspaceDir: params.workspaceDir,
     authStore: params.authStore,
+    authProfile: params.authProfile,
     configRef: params.configRef,
     credentialKey,
     providerIds,
