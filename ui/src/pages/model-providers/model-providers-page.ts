@@ -66,6 +66,8 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   @state() private keyEditorProvider: string | null = null;
   @state() private keyDraft = "";
   @state() private pendingLogoutProvider: string | null = null;
+  @state() private profileOrders: Record<string, string[]> = {};
+  @state() private profileOrderUnsupported = false;
   @state() private addProviderOpen = false;
   @state() private addProviderId = "";
   @state() private addProviderKey = "";
@@ -79,6 +81,11 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   // Global config writes survive agent switches; their card state does not.
   private agentEpoch = 0;
   private probeEpochs = new Map<string, number>();
+  private pendingProfileOrders = new Map<
+    string,
+    { cardId: string; profileIds: string[] | null; optimisticOrder: string[] }
+  >();
+  private activeProfileOrderProviders = new Set<string>();
   private readonly refreshTask = new Task(this, {
     autoRun: false,
     task: (
@@ -235,6 +242,9 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     this.probeResults = {};
     this.closeKeyEditor();
     this.pendingLogoutProvider = null;
+    this.profileOrders = {};
+    this.profileOrderUnsupported = false;
+    this.pendingProfileOrders.clear();
     this.addProviderOpen = false;
     this.addProviderId = "";
     this.addProviderKey = "";
@@ -539,6 +549,104 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     }
   }
 
+  private setProfileOrder(cardId: string, provider: string, profileIds: string[] | null) {
+    const providerStatus = this.data?.authStatus?.providers.find(
+      (candidate) => candidate.provider === provider,
+    );
+    const optimisticOrder =
+      profileIds ?? providerStatus?.profiles.map((profile) => profile.profileId) ?? [];
+    this.profileOrders = { ...this.profileOrders, [provider]: optimisticOrder };
+    this.pendingProfileOrders.set(provider, { cardId, profileIds, optimisticOrder });
+    this.setMessage(cardId, null);
+    void this.flushProfileOrder(provider);
+  }
+
+  private async flushProfileOrder(provider: string) {
+    if (this.activeProfileOrderProviders.has(provider)) {
+      return;
+    }
+    this.activeProfileOrderProviders.add(provider);
+    try {
+      while (true) {
+        const pending = this.pendingProfileOrders.get(provider);
+        if (!pending) {
+          return;
+        }
+        this.pendingProfileOrders.delete(provider);
+        const client = this.context.gateway.snapshot.client;
+        if (!client || !this.canMutate()) {
+          return;
+        }
+        const clientEpoch = this.gateway.epoch;
+        const agentEpoch = this.agentEpoch;
+        const agentId = this.selectedAgentId;
+        try {
+          await client.request("models.authOrderSet", {
+            provider,
+            ...(pending.profileIds ? { profileIds: pending.profileIds } : {}),
+            agentId,
+          });
+          if (
+            !this.isCurrentClient(client, clientEpoch) ||
+            this.agentEpoch !== agentEpoch ||
+            this.selectedAgentId !== agentId
+          ) {
+            return;
+          }
+          this.applyProfileOrder(provider, pending.profileIds);
+          if (this.profileOrders[provider] === pending.optimisticOrder) {
+            const { [provider]: _completed, ...remaining } = this.profileOrders;
+            this.profileOrders = remaining;
+          }
+        } catch (error) {
+          if (
+            !this.isCurrentClient(client, clientEpoch) ||
+            this.agentEpoch !== agentEpoch ||
+            this.selectedAgentId !== agentId
+          ) {
+            return;
+          }
+          if (isMissingMethodError(error)) {
+            this.profileOrderUnsupported = true;
+          }
+          const ownsDraft = this.profileOrders[provider] === pending.optimisticOrder;
+          if (ownsDraft) {
+            const { [provider]: _failed, ...remaining } = this.profileOrders;
+            this.profileOrders = remaining;
+            this.setMessage(pending.cardId, {
+              kind: "error",
+              text: modelProviderErrorMessage(error),
+            });
+          }
+        }
+      }
+    } finally {
+      this.activeProfileOrderProviders.delete(provider);
+    }
+  }
+
+  private applyProfileOrder(provider: string, profileIds: string[] | null) {
+    const authStatus = this.data?.authStatus;
+    if (!this.data || !authStatus) {
+      return;
+    }
+    this.data = {
+      ...this.data,
+      authStatus: {
+        ...authStatus,
+        providers: authStatus.providers.map((candidate) => {
+          if (candidate.provider !== provider) {
+            return candidate;
+          }
+          const { profileOrder: _order, profileOrderStored: _stored, ...base } = candidate;
+          return profileIds
+            ? { ...base, profileOrder: [...profileIds], profileOrderStored: true as const }
+            : base;
+        }),
+      },
+    };
+  }
+
   private async addProvider() {
     const provider = this.addProviderId;
     const apiKey = this.addProviderKey.trim();
@@ -625,6 +733,10 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
         .map((provider) => provider.provider) ?? []),
     ]);
     const advertised = isGatewayMethodAdvertised(gatewaySnapshot, "models.probe");
+    const profileOrderAdvertised = isGatewayMethodAdvertised(
+      gatewaySnapshot,
+      "models.authOrderSet",
+    );
     const body = renderModelProviders({
       connected: gatewaySnapshot.phase === "connected",
       loading: gatewaySnapshot.phase === "connected" && this.data === null && !rosterError,
@@ -656,6 +768,8 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       keyEditorProvider: this.keyEditorProvider,
       keyDraft: this.keyDraft,
       pendingLogoutProvider: this.pendingLogoutProvider,
+      profileOrderAvailable: !this.profileOrderUnsupported && profileOrderAdvertised !== false,
+      profileOrders: this.profileOrders,
       addProviderOpen: this.addProviderOpen,
       addProviderId: this.addProviderId,
       addProviderKey: this.addProviderKey,
@@ -670,6 +784,10 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       onRequestLogout: (provider) => (this.pendingLogoutProvider = provider),
       onCancelLogout: () => (this.pendingLogoutProvider = null),
       onLogout: (cardId, providers) => void this.logout(cardId, providers),
+      onLogoutProfile: (cardId, provider, profileId) =>
+        void this.logout(cardId, [{ provider, profileIds: [profileId] }]),
+      onProfileOrderChange: (cardId, provider, profileIds) =>
+        this.setProfileOrder(cardId, provider, profileIds),
       onAddProviderToggle: () => {
         this.addProviderOpen = !this.addProviderOpen;
         this.addProviderKey = "";

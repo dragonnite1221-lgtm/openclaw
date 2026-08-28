@@ -53,6 +53,12 @@ export type ModelProviderCard = {
   displayName: string;
   auth?: ModelProviderAuthSummary;
   profiles: ModelAuthStatusProfile[];
+  /** Provider route and priority owner for each visible profile. */
+  profileProviderIds: Record<string, string>;
+  /** Explicit priority, or inventory order while selection is automatic, by provider route. */
+  profileOrders: Record<string, string[]>;
+  /** Provider routes whose stored priority can be reset. */
+  profileOrderStoredProviders: string[];
   apiKey?: ModelAuthStatusProvider["apiKey"];
   hasConfigApiKey: boolean;
   modelCount: number;
@@ -117,6 +123,9 @@ function ensureDraft(drafts: CardDraft[], id: string, displayName: string): Card
       id,
       displayName,
       profiles: [],
+      profileProviderIds: {},
+      profileOrders: {},
+      profileOrderStoredProviders: [],
       credentialProviderIds: [],
       logoutTargets: [],
       hasConfigApiKey: false,
@@ -246,6 +255,20 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     }
     draft.card.displayName = provider.displayName || draft.card.displayName;
     draft.card.profiles.push(...provider.profiles);
+    if (provider.profiles.length > 0) {
+      for (const profile of provider.profiles) {
+        draft.card.profileProviderIds[profile.profileId] = provider.provider;
+      }
+      draft.card.profileOrders[provider.provider] = provider.profileOrder
+        ? [...provider.profileOrder]
+        : provider.profiles.map((profile) => profile.profileId);
+      if (
+        provider.profileOrderStored === true &&
+        !draft.card.profileOrderStoredProviders.includes(provider.provider)
+      ) {
+        draft.card.profileOrderStoredProviders.push(provider.provider);
+      }
+    }
     if (provider.apiKey || provider.profiles.length > 0) {
       addProviderId(draft.card.credentialProviderIds, provider.provider);
     }

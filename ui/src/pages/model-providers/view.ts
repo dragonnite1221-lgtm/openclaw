@@ -31,6 +31,7 @@ import type {
   ProviderOption,
 } from "./data.ts";
 import { renderDefaultModels } from "./default-models-view.ts";
+import { renderProviderProfiles } from "./profiles-view.ts";
 import { hasVerifiedProvider, renderProviderStatus } from "./view-status.ts";
 
 export type ModelProviderRowMessage = {
@@ -71,6 +72,8 @@ type ModelProvidersViewProps = {
   keyEditorProvider: string | null;
   keyDraft: string;
   pendingLogoutProvider: string | null;
+  profileOrderAvailable: boolean;
+  profileOrders: Record<string, string[]>;
   addProviderOpen: boolean;
   addProviderId: string;
   addProviderKey: string;
@@ -84,6 +87,8 @@ type ModelProvidersViewProps = {
   onRequestLogout: (provider: string) => void;
   onCancelLogout: () => void;
   onLogout: (cardId: string, targets: ModelProviderLogoutTarget[]) => void;
+  onLogoutProfile: (cardId: string, provider: string, profileId: string) => void;
+  onProfileOrderChange: (cardId: string, provider: string, profileIds: string[] | null) => void;
   onAddProviderToggle: () => void;
   onAddProviderIdChange: (provider: string) => void;
   onAddProviderKeyChange: (value: string) => void;
@@ -340,7 +345,7 @@ function renderProviderActions(card: ModelProviderCard, props: ModelProvidersVie
     ? card.credentialProviderIds
     : [card.id];
   const isConfigured = card.hasConfigApiKey || Boolean(card.apiKey) || card.profiles.length > 0;
-  const canLogout = card.logoutTargets.length > 0;
+  const canLogout = card.profiles.length === 0 && card.logoutTargets.length > 0;
   const probeBusy = Boolean(props.busy[`probe:${card.id}`]);
   const keyBusy = Boolean(props.busy[`key:${card.id}`]);
   const logoutBusy = Boolean(props.busy[`logout:${card.id}`]);
@@ -451,7 +456,18 @@ function renderProviderRow(card: ModelProviderCard, props: ModelProvidersViewPro
           ${renderProviderStatus(card)}
         </div>
       </div>
-      ${renderCredentialSummary(card, props.credentialAgentLabel)}
+      ${renderProviderProfiles(card, {
+        busy: props.busy,
+        canMutate: props.canMutate && !props.configBusy,
+        profileOrderAvailable: props.profileOrderAvailable,
+        profileOrders: props.profileOrders,
+        onOpenModelSetup: props.onOpenModelSetup,
+        onProfileOrderChange: props.onProfileOrderChange,
+        onLogoutProfile: props.onLogoutProfile,
+      })}
+      ${card.profiles.length === 0
+        ? renderCredentialSummary(card, props.credentialAgentLabel)
+        : nothing}
       <div
         class="model-providers__global-metrics"
         aria-busy=${props.supplementalLoading ? "true" : "false"}

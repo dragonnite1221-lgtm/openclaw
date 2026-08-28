@@ -14,6 +14,9 @@ function card(overrides: Partial<ModelProviderCard> = {}): ModelProviderCard {
     id: "openai",
     displayName: "OpenAI",
     profiles: [],
+    profileProviderIds: {},
+    profileOrders: {},
+    profileOrderStoredProviders: [],
     credentialProviderIds: ["openai"],
     logoutTargets: [],
     hasConfigApiKey: false,
@@ -56,6 +59,8 @@ function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProviders
     keyEditorProvider: null,
     keyDraft: "",
     pendingLogoutProvider: null,
+    profileOrderAvailable: true,
+    profileOrders: {},
     addProviderOpen: false,
     addProviderId: "",
     addProviderKey: "",
@@ -69,6 +74,8 @@ function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProviders
     onRequestLogout: () => undefined,
     onCancelLogout: () => undefined,
     onLogout: () => undefined,
+    onLogoutProfile: () => undefined,
+    onProfileOrderChange: () => undefined,
     onAddProviderToggle: () => undefined,
     onAddProviderIdChange: () => undefined,
     onAddProviderKeyChange: () => undefined,
@@ -845,34 +852,66 @@ describe("renderModelProviders", () => {
     expect(onProbe).toHaveBeenCalledWith("openai", ["anthropic", "claude-cli"]);
   });
 
-  it("shows logout confirmation only for OAuth or token profiles", () => {
-    const onLogout = vi.fn();
+  it("logs out one profile from its quiet icon action", () => {
+    const onLogoutProfile = vi.fn();
     const container = mount(
       props({
         cards: [
           card({
             credentialProviderIds: ["openai", "openai-codex"],
             logoutTargets: [{ provider: "openai-codex", profileIds: ["openai:oauth"] }],
+            profileProviderIds: { "openai:oauth": "openai-codex" },
+            profileOrders: { "openai-codex": ["openai:oauth"] },
             profiles: [
               {
                 profileId: "openai:oauth",
                 type: "oauth",
                 status: "ok",
                 logoutSupported: true,
+                email: "owner@example.com",
               },
             ],
           }),
         ],
-        pendingLogoutProvider: "openai",
-        onLogout,
+        onLogoutProfile,
       }),
     );
-    expect(text(container.querySelector(".model-providers__confirm"))).toContain(
-      "Log out of OpenAI?",
+    expect(container.querySelector(".model-providers__confirm")).toBeNull();
+    container.querySelector<HTMLButtonElement>('[aria-label="Log out owner@example.com"]')?.click();
+    expect(onLogoutProfile).toHaveBeenCalledWith("openai", "openai-codex", "openai:oauth");
+  });
+
+  it("reorders profiles from the keyboard even while provider data refreshes", () => {
+    const onProfileOrderChange = vi.fn();
+    const container = mount(
+      props({
+        refreshing: true,
+        cards: [
+          card({
+            profiles: [
+              { profileId: "openai:one", type: "oauth", status: "ok", email: "one@example.com" },
+              { profileId: "openai:two", type: "oauth", status: "ok", email: "two@example.com" },
+            ],
+            profileProviderIds: {
+              "openai:one": "openai",
+              "openai:two": "openai",
+            },
+            profileOrders: { openai: ["openai:one", "openai:two"] },
+          }),
+        ],
+        onProfileOrderChange,
+      }),
     );
-    container.querySelector<HTMLButtonElement>(".model-providers__confirm .btn.danger")?.click();
-    expect(onLogout).toHaveBeenCalledWith("openai", [
-      { provider: "openai-codex", profileIds: ["openai:oauth"] },
+    const secondGrip = container.querySelectorAll<HTMLButtonElement>(
+      ".model-providers__profile-grip",
+    )[1];
+
+    secondGrip?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+
+    expect(secondGrip?.disabled).toBe(false);
+    expect(onProfileOrderChange).toHaveBeenCalledWith("openai", "openai", [
+      "openai:two",
+      "openai:one",
     ]);
   });
 

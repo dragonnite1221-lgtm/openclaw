@@ -22,6 +22,7 @@ export type ModelProvidersPageTestElement = HTMLElement & {
   logout: (cardId: string, targets: ModelProviderLogoutTarget[]) => Promise<void>;
   messages: Record<string, { kind: "success" | "error"; text: string; warning?: string }>;
   pendingLogoutProvider: string | null;
+  profileOrders: Record<string, string[]>;
   probe: (cardId: string, providers: string[]) => Promise<void>;
   probeResults: Record<string, ModelsProbeResult>;
   refresh: (opts: { force: boolean }) => Promise<void>;
@@ -29,6 +30,7 @@ export type ModelProvidersPageTestElement = HTMLElement & {
   requestUpdate: () => void;
   saveDefaultModels: () => Promise<void>;
   saveKey: (provider: string, configKey: string) => Promise<void>;
+  setProfileOrder: (cardId: string, provider: string, profileIds: string[] | null) => void;
   selectedAgentId: string;
 };
 

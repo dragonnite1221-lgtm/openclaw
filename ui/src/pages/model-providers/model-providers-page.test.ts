@@ -479,6 +479,37 @@ describe("ModelProvidersPage agent scope", () => {
     expect(request.mock.calls.filter(([method]) => method === "models.authLogout")).toHaveLength(1);
   });
 
+  it("keeps the latest profile order visible while saves are queued", async () => {
+    const { context, request } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const originalRequest = request.getMockImplementation()!;
+    const firstSave = deferred<unknown>();
+    let orderRequests = 0;
+    request.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "models.authOrderSet") {
+        orderRequests += 1;
+        if (orderRequests === 1) {
+          return firstSave.promise;
+        }
+        return {};
+      }
+      void params;
+      return originalRequest(method);
+    });
+
+    page.setProfileOrder("openai", "openai", ["openai:two", "openai:one"]);
+    await vi.waitFor(() => expect(orderRequests).toBe(1));
+    page.setProfileOrder("openai", "openai", ["openai:one", "openai:two"]);
+
+    expect(page.profileOrders.openai).toEqual(["openai:one", "openai:two"]);
+    expect(orderRequests).toBe(1);
+    firstSave.resolve({});
+    await vi.waitFor(() => expect(orderRequests).toBe(2));
+    await vi.waitFor(() => expect(page.profileOrders.openai).toBeUndefined());
+    expect(page.messages.openai).toBeUndefined();
+  });
+
   it("stops queued agent-scoped logouts when route data changes the selected agent", async () => {
     const { agentSelection, context, request, snapshot } = createHarness("main");
     const page = appendPage(context);
