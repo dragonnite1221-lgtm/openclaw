@@ -4835,6 +4835,7 @@ export const en: TranslationMap = {
       accountOne: "1 account",
       accounts: "{count} accounts",
       reorderHint: "drag to set priority",
+      partialOrder: "Reset the saved order before changing priority.",
       resetOrder: "Reset",
       addAccount: "Add account",
       lastUsed: "Last used {time} ago",

@@ -510,6 +510,39 @@ describe("ModelProvidersPage agent scope", () => {
     expect(page.messages.openai).toBeUndefined();
   });
 
+  it("keeps a saved auth-owner order on every alias route", async () => {
+    const { context, request } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    page.data = {
+      ...EMPTY_MODEL_PROVIDERS_DATA,
+      config: {},
+      authStatus: {
+        ts: 1,
+        providers: [
+          {
+            provider: "claude-cli",
+            authProvider: "anthropic",
+            displayName: "Claude",
+            status: "ok",
+            profiles: [
+              { profileId: "claude:one", type: "oauth", status: "ok" },
+              { profileId: "claude:two", type: "oauth", status: "ok" },
+            ],
+            profileOrder: ["claude:one", "claude:two"],
+          },
+        ],
+      },
+      updatedAt: 1,
+    };
+
+    page.setProfileOrder("anthropic", "anthropic", ["claude:two", "claude:one"]);
+
+    await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(1));
+    await vi.waitFor(() => expect(page.profileOrders.anthropic).toBeUndefined());
+    expect(page.data.authStatus?.providers[0]?.profileOrder).toEqual(["claude:two", "claude:one"]);
+  });
+
   it("keeps a queued profile order until configuration work completes", async () => {
     const { context, notifyRuntimeConfig, request, runtimeConfig } = createHarness("main");
     const page = appendPage(context);
@@ -656,6 +689,47 @@ describe("ModelProvidersPage agent scope", () => {
     ).toBe(false);
   });
 
+  it("confirms an account logout before removing its saved credential", async () => {
+    const { context, request } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    page.data = {
+      ...EMPTY_MODEL_PROVIDERS_DATA,
+      config: {},
+      authStatus: {
+        ts: 1,
+        providers: [
+          {
+            provider: "openai",
+            displayName: "OpenAI",
+            status: "ok",
+            profiles: [
+              {
+                profileId: "openai:one",
+                type: "oauth",
+                status: "ok",
+                email: "owner@example.com",
+                logoutSupported: true,
+              },
+            ],
+          },
+        ],
+      },
+      updatedAt: 1,
+    };
+    page.requestUpdate();
+    await page.updateComplete;
+    request.mockClear();
+
+    page.querySelector<HTMLButtonElement>('[aria-label="Log out owner@example.com"]')?.click();
+    await page.updateComplete;
+
+    expect(requestCount(request, "models.authLogout")).toBe(0);
+    expect(page.querySelector(".model-providers__confirm")?.textContent).toContain(
+      "owner@example.com",
+    );
+  });
+
   it("stops queued agent-scoped logouts when route data changes the selected agent", async () => {
     const { agentSelection, context, request, snapshot } = createHarness("main");
     const page = appendPage(context);
@@ -680,7 +754,11 @@ describe("ModelProvidersPage agent scope", () => {
     page.addProviderId = "anthropic";
     page.addProviderKey = "synthetic-route-provider-key";
     page.defaultsDraft = defaultsDraft;
-    page.pendingLogoutProvider = "openai";
+    page.pendingLogout = {
+      cardId: "openai",
+      label: "OpenAI",
+      targets: [{ provider: "openai", profileIds: ["openai:first"] }],
+    };
     page.messages = { openai: { kind: "error", text: "Previous agent failure" } };
     page.probeResults = {
       openai: { provider: "openai", status: "ok", results: [] },
@@ -697,7 +775,7 @@ describe("ModelProvidersPage agent scope", () => {
     await page.updateComplete;
     expect(page.selectedAgentId).toBe("writer");
     expect(page.busy).toEqual({});
-    expect(page.pendingLogoutProvider).toBeNull();
+    expect(page.pendingLogout).toBeNull();
     expect(page.messages).toEqual({});
     expect(page.probeResults).toEqual({});
     expect(page.keyEditorProvider).toBeNull();

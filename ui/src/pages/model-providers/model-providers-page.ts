@@ -31,6 +31,7 @@ import {
   buildUnconfiguredProviderOptions,
   readModelProviderConfig,
   type DefaultModelSelection,
+  type ModelProviderPendingLogout,
   type ModelProviderLogoutTarget,
 } from "./data.ts";
 import {
@@ -65,7 +66,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   @state() private probeUnsupported = false;
   @state() private keyEditorProvider: string | null = null;
   @state() private keyDraft = "";
-  @state() private pendingLogoutProvider: string | null = null;
+  @state() private pendingLogout: ModelProviderPendingLogout | null = null;
   @state() private profileOrders: Record<string, string[]> = {};
   @state() private addProviderOpen = false;
   @state() private addProviderId = "";
@@ -242,7 +243,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     this.messages = {};
     this.probeResults = {};
     this.closeKeyEditor();
-    this.pendingLogoutProvider = null;
+    this.pendingLogout = null;
     this.profileOrders = {};
     this.pendingProfileOrders.clear();
     this.addProviderOpen = false;
@@ -536,7 +537,9 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
         this.setMessage(cardId, { kind: "error", text: modelProviderErrorMessage(firstError) });
         return;
       }
-      this.pendingLogoutProvider = null;
+      if (this.pendingLogout?.cardId === cardId) {
+        this.pendingLogout = null;
+      }
       this.setMessage(cardId, { kind: "success", text: t("modelProviders.logout.done") });
     } catch (error) {
       if (this.isCurrentClient(client, clientEpoch) && this.agentEpoch === agentEpoch) {
@@ -660,7 +663,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       authStatus: {
         ...authStatus,
         providers: authStatus.providers.map((candidate) => {
-          if (candidate.provider !== provider) {
+          if ((candidate.authProvider ?? candidate.provider) !== provider) {
             return candidate;
           }
           const { profileOrder: _order, profileOrderStored: _stored, ...base } = candidate;
@@ -788,7 +791,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       probeResults: this.probeResults,
       keyEditorProvider: this.keyEditorProvider,
       keyDraft: this.keyDraft,
-      pendingLogoutProvider: this.pendingLogoutProvider,
+      pendingLogout: this.pendingLogout,
       profileOrders: this.profileOrders,
       addProviderOpen: this.addProviderOpen,
       addProviderId: this.addProviderId,
@@ -801,11 +804,9 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       onSaveKey: (provider, configKey) => void this.saveKey(provider, configKey),
       onRemoveKey: (provider, configKey) => void this.removeKey(provider, configKey),
       onProbe: (cardId, providers) => void this.probe(cardId, providers),
-      onRequestLogout: (provider) => (this.pendingLogoutProvider = provider),
-      onCancelLogout: () => (this.pendingLogoutProvider = null),
+      onRequestLogout: (pending) => (this.pendingLogout = pending),
+      onCancelLogout: () => (this.pendingLogout = null),
       onLogout: (cardId, providers) => void this.logout(cardId, providers),
-      onLogoutProfile: (cardId, provider, profileId) =>
-        void this.logout(cardId, [{ provider, profileIds: [profileId] }]),
       onProfileOrderChange: (cardId, provider, profileIds) =>
         this.setProfileOrder(cardId, provider, profileIds),
       onAddProviderToggle: () => {

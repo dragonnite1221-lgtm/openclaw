@@ -58,7 +58,7 @@ function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProviders
     probeResults: {},
     keyEditorProvider: null,
     keyDraft: "",
-    pendingLogoutProvider: null,
+    pendingLogout: null,
     profileOrders: {},
     addProviderOpen: false,
     addProviderId: "",
@@ -73,7 +73,6 @@ function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProviders
     onRequestLogout: () => undefined,
     onCancelLogout: () => undefined,
     onLogout: () => undefined,
-    onLogoutProfile: () => undefined,
     onProfileOrderChange: () => undefined,
     onAddProviderToggle: () => undefined,
     onAddProviderIdChange: () => undefined,
@@ -851,33 +850,37 @@ describe("renderModelProviders", () => {
     expect(onProbe).toHaveBeenCalledWith("openai", ["anthropic", "claude-cli"]);
   });
 
-  it("logs out one profile from its quiet icon action", () => {
-    const onLogoutProfile = vi.fn();
-    const container = mount(
-      props({
-        cards: [
-          card({
-            credentialProviderIds: ["openai", "openai-codex"],
-            logoutTargets: [{ provider: "openai-codex", profileIds: ["openai:oauth"] }],
-            profileProviderIds: { "openai:oauth": "openai-codex" },
-            profileOrders: { "openai-codex": ["openai:oauth"] },
-            profiles: [
-              {
-                profileId: "openai:oauth",
-                type: "oauth",
-                status: "ok",
-                logoutSupported: true,
-                email: "owner@example.com",
-              },
-            ],
-          }),
-        ],
-        onLogoutProfile,
-      }),
-    );
+  it("confirms one profile logout from its quiet icon action", () => {
+    const profileCard = card({
+      credentialProviderIds: ["openai", "openai-codex"],
+      logoutTargets: [{ provider: "openai-codex", profileIds: ["openai:oauth"] }],
+      profileProviderIds: { "openai:oauth": "openai-codex" },
+      profileOrders: { "openai-codex": ["openai:oauth"] },
+      profiles: [
+        {
+          profileId: "openai:oauth",
+          type: "oauth",
+          status: "ok",
+          logoutSupported: true,
+          email: "owner@example.com",
+        },
+      ],
+    });
+    const onRequestLogout = vi.fn();
+    const container = mount(props({ cards: [profileCard], onRequestLogout }));
     expect(container.querySelector(".model-providers__confirm")).toBeNull();
     container.querySelector<HTMLButtonElement>('[aria-label="Log out owner@example.com"]')?.click();
-    expect(onLogoutProfile).toHaveBeenCalledWith("openai", "openai-codex", "openai:oauth");
+    const pendingLogout = {
+      cardId: "openai",
+      label: "owner@example.com",
+      targets: [{ provider: "openai-codex", profileIds: ["openai:oauth"] }],
+    };
+    expect(onRequestLogout).toHaveBeenCalledWith(pendingLogout);
+
+    const onLogout = vi.fn();
+    const confirmation = mount(props({ cards: [profileCard], pendingLogout, onLogout }));
+    button(confirmation, "Log out")?.click();
+    expect(onLogout).toHaveBeenCalledWith("openai", pendingLogout.targets);
   });
 
   it("reorders profiles from the keyboard even while provider data refreshes", () => {
@@ -914,7 +917,7 @@ describe("renderModelProviders", () => {
     ]);
   });
 
-  it("keeps profiles omitted from an explicit order excluded during reordering", () => {
+  it("disables reordering when a stored order omits visible profiles", () => {
     const onProfileOrderChange = vi.fn();
     const container = mount(
       props({
@@ -938,13 +941,11 @@ describe("renderModelProviders", () => {
     );
     const grips = container.querySelectorAll<HTMLButtonElement>(".model-providers__profile-grip");
 
-    expect(grips[2]?.disabled).toBe(true);
+    expect([...grips].every((grip) => grip.disabled)).toBe(true);
+    expect(grips[0]?.title).toContain("Reset");
     grips[1]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
 
-    expect(onProfileOrderChange).toHaveBeenCalledWith("openai", "openai", [
-      "openai:two",
-      "openai:one",
-    ]);
+    expect(onProfileOrderChange).not.toHaveBeenCalled();
   });
 
   it("disables roster mutations when provider settings are read-only", () => {

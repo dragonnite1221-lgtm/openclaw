@@ -39,6 +39,12 @@ export type ModelProviderLogoutTarget = {
   profileIds: string[];
 };
 
+export type ModelProviderPendingLogout = {
+  cardId: string;
+  label: string;
+  targets: ModelProviderLogoutTarget[];
+};
+
 export type ModelProviderCard = {
   /** Canonical provider id used for icon + label lookup. */
   id: string;

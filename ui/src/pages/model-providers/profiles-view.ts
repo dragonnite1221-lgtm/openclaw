@@ -6,7 +6,7 @@ import { renderSettingsStatus } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
 import { moveArrayEntry, type ArrayDropPosition } from "../../lib/array-order.ts";
 import { formatDurationHuman } from "../../lib/format.ts";
-import type { ModelProviderCard } from "./data.ts";
+import type { ModelProviderCard, ModelProviderPendingLogout } from "./data.ts";
 
 type ProviderProfile = ModelProviderCard["profiles"][number];
 
@@ -17,7 +17,7 @@ export type ProviderProfilesViewProps = {
   profileOrders: Record<string, string[]>;
   onOpenModelSetup: () => void;
   onProfileOrderChange: (cardId: string, provider: string, profileIds: string[] | null) => void;
-  onLogoutProfile: (cardId: string, provider: string, profileId: string) => void;
+  onRequestLogout: (pending: ModelProviderPendingLogout) => void;
 };
 
 const DRAGGING_CLASS = "model-providers__profile--dragging";
@@ -234,9 +234,10 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
   const providers = [
     ...new Set(profiles.map((profile) => card.profileProviderIds[profile.profileId] ?? card.id)),
   ];
-  const reorderOffered = providers.some(
-    (provider) => movableOrder(card, provider, props.profileOrders).length > 1,
-  );
+  const reorderOffered = providers.some((provider) => {
+    const order = movableOrder(card, provider, props.profileOrders);
+    return order.length > 1 && order.length === profilesForProvider(card, provider).length;
+  });
   return html`
     <section class="model-providers__profiles" aria-label=${t("modelProviders.profiles.title")}>
       <div class="model-providers__profiles-heading">
@@ -276,12 +277,18 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
             const provider = card.profileProviderIds[profile.profileId] ?? card.id;
             const order = movableOrder(card, provider, props.profileOrders);
             const index = order.indexOf(profile.profileId);
-            const canMove = props.canMutate && order.length > 1 && index >= 0;
+            const complete = order.length === profilesForProvider(card, provider).length;
+            const canMove = props.canMutate && complete && order.length > 1 && index >= 0;
             const identity = profileIdentity(profile);
             const logoutLabel = t("modelProviders.logout.actionFor", { account: identity });
             const logoutBlocked = !props.canMutate
               ? (props.mutationBlockedReason ?? "")
               : logoutLabel;
+            const reorderBlocked = !props.canMutate
+              ? (props.mutationBlockedReason ?? "")
+              : !complete
+                ? t("modelProviders.profiles.partialOrder")
+                : "";
             const move = (targetId: string, position: ArrayDropPosition) => {
               const next = moveArrayEntry(order, profile.profileId, targetId, position);
               if (next.some((profileId, candidate) => profileId !== order[candidate])) {
@@ -304,6 +311,7 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                     position: String(index + 1),
                   })}
                   aria-keyshortcuts=${canMove ? "ArrowUp ArrowDown" : nothing}
+                  title=${reorderBlocked}
                   @pointerdown=${(event: PointerEvent) =>
                     startPointerDrag({
                       event,
@@ -343,7 +351,12 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                   ?disabled=${!props.canMutate ||
                   profile.logoutSupported !== true ||
                   props.busy[`logout:${card.id}`]}
-                  @click=${() => props.onLogoutProfile(card.id, provider, profile.profileId)}
+                  @click=${() =>
+                    props.onRequestLogout({
+                      cardId: card.id,
+                      label: identity,
+                      targets: [{ provider, profileIds: [profile.profileId] }],
+                    })}
                 >
                   ${logoutIcon}
                 </button>
