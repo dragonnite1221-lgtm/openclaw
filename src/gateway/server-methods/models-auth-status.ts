@@ -47,6 +47,7 @@ import {
 } from "../../agents/provider-auth-aliases.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { hasConfiguredSecretInput } from "../../config/types.secrets.js";
+import { resolveProviderUsageAuthEnvCredentialProviders } from "../../infra/provider-usage.auth.js";
 import { providerUsageLabel, resolveUsageProviderId } from "../../infra/provider-usage.shared.js";
 import type { UsageProviderId } from "../../infra/provider-usage.types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -784,9 +785,13 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
         authAliasLookupParams,
       });
 
-      // OAuth/token usage is fetched once per exact profile below; the first
-      // account also backs the legacy provider summary. Only provider-wide API
-      // key usage needs this separate cache read.
+      // Exact-profile reads below cover account quotas. Admin credentials expose
+      // separate organization history, so those providers retain an unscoped read.
+      const providerWideUsageIds = resolveProviderUsageAuthEnvCredentialProviders({
+        config: cfg,
+        env: process.env,
+        plugins: preparedSnapshot.metadataSnapshot.plugins,
+      });
       const usageProviderIds = [
         ...new Set(
           authHealth.profiles
@@ -794,9 +799,13 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
               const usageProvider = resolveUsageProviderId(p.provider, {
                 credentialType: p.type,
               });
-              return p.type === "api_key" && usageProvider
-                ? apiKeyUsageStatusProviders.has(usageProvider)
-                : false;
+              if (!usageProvider) {
+                return false;
+              }
+              if (p.type === "oauth" || p.type === "token") {
+                return providerWideUsageIds.has(usageProvider);
+              }
+              return p.type === "api_key" && apiKeyUsageStatusProviders.has(usageProvider);
             })
             .map((p) => resolveUsageProviderId(p.provider, { credentialType: p.type }))
             .filter((id): id is UsageProviderId => Boolean(id)),

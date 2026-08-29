@@ -110,29 +110,49 @@ function hasProviderAuthEnvCredentialSource(params: {
   return false;
 }
 
+export function resolveProviderUsageAuthEnvCredentialProviders(params: {
+  config: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  plugins?: readonly PluginManifestRecord[];
+}): Set<string> {
+  const state: UsageAuthState = {
+    cfg: params.config,
+    env: params.env ?? process.env,
+    allowAuthProfileStore: false,
+  };
+  const providers = new Set<string>();
+  try {
+    const plugins =
+      params.plugins ??
+      loadManifestMetadataSnapshot({
+        config: state.cfg,
+        env: state.env,
+      }).plugins;
+    for (const plugin of plugins) {
+      if (!isUsageProviderManifestEligible({ plugin, state })) {
+        continue;
+      }
+      for (const [providerId, envVars] of Object.entries(plugin.providerUsageAuthEnvVars ?? {})) {
+        if (envVars.some((envVar) => Boolean(normalizeSecretInput(state.env[envVar])))) {
+          providers.add(normalizeProviderId(providerId));
+        }
+      }
+    }
+  } catch {
+    return providers;
+  }
+  return providers;
+}
+
 function hasProviderUsageAuthEnvCredentialSource(params: {
   state: UsageAuthState;
   providerIds: string[];
 }): boolean {
-  const providerIds = new Set(normalizeProviderIds(params.providerIds));
-  try {
-    const snapshot = loadManifestMetadataSnapshot({
-      config: params.state.cfg,
-      env: params.state.env,
-    });
-    return snapshot.plugins.some((plugin) => {
-      if (!isUsageProviderManifestEligible({ plugin, state: params.state })) {
-        return false;
-      }
-      return Object.entries(plugin.providerUsageAuthEnvVars ?? {}).some(
-        ([providerId, envVars]) =>
-          providerIds.has(normalizeProviderId(providerId)) &&
-          envVars.some((envVar) => Boolean(normalizeSecretInput(params.state.env[envVar]))),
-      );
-    });
-  } catch {
-    return false;
-  }
+  const providers = resolveProviderUsageAuthEnvCredentialProviders({
+    config: params.state.cfg,
+    env: params.state.env,
+  });
+  return normalizeProviderIds(params.providerIds).some((providerId) => providers.has(providerId));
 }
 
 function resolveProviderApiKeyFromConfigAndStore(params: {

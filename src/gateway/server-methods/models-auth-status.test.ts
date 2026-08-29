@@ -1530,6 +1530,76 @@ describe("models.authStatus", () => {
     expect(readOnly.providers[0]?.profiles[0]?.usage).not.toHaveProperty("accountEmail");
   });
 
+  it.each([
+    ["openai", "OPENAI_ADMIN_KEY"],
+    ["anthropic", "ANTHROPIC_ADMIN_KEY"],
+    ["anthropic", "ANTHROPIC_ADMIN_API_KEY"],
+  ] as const)(
+    "keeps %s Admin usage beside account-scoped OAuth usage from %s",
+    async (provider, envVar) => {
+      const profileId = `${provider}:account`;
+      const profile = {
+        profileId,
+        provider,
+        type: "oauth",
+        status: "ok",
+        source: "store",
+        label: `${provider}@example.com`,
+      } satisfies AuthHealthSummary["profiles"][number];
+      mocks.buildAuthHealthSummary.mockReturnValue({
+        now: 0,
+        warnAfterMs: 0,
+        profiles: [profile],
+        providers: [{ provider, status: "ok", profiles: [profile] }],
+      });
+      setPreparedAuthStore({
+        version: 1,
+        profiles: {
+          [profileId]: {
+            type: "oauth",
+            provider,
+            access: "account-access",
+            refresh: "account-refresh",
+            expires: 1_000_000,
+          },
+        },
+      });
+      const plugin = {
+        id: provider,
+        origin: "bundled",
+        providers: [provider],
+        providerUsageAuthEnvVars: { [provider]: [envVar] },
+      };
+      setPreparedMetadataSnapshot({
+        index: { plugins: [] },
+        manifestRegistry: { plugins: [plugin] },
+        plugins: [plugin],
+      });
+
+      await withEnvAsync({ [envVar]: "admin-key" }, async () => {
+        await readAuthStatus();
+        await waitForFast(() => expect(mocks.loadProviderUsageSummary).toHaveBeenCalledTimes(2));
+      });
+
+      expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({
+        providers: [provider],
+        agentDir: "/tmp/agent",
+        authStore: preparedAuthStore,
+        config: expect.any(Object),
+        timeoutMs: 5_000,
+      });
+      expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({
+        providers: [provider],
+        authProfile: { provider, profileId },
+        agentDir: "/tmp/agent",
+        workspaceDir: "/tmp/workspace",
+        authStore: preparedAuthStore,
+        config: expect.any(Object),
+        timeoutMs: 5_000,
+      });
+    },
+  );
+
   it("uses effective profile order for the provider usage summary", async () => {
     const runtimeConfig = {};
     mocks.getRuntimeConfig.mockReturnValue(runtimeConfig);
