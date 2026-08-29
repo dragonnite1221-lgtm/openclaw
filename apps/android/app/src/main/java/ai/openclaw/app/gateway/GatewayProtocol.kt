@@ -477,7 +477,6 @@ enum class GatewayMethod(
   CommandsList("commands.list"),
   ModelsList("models.list"),
   ModelsAuthStatus("models.authStatus"),
-  ModelsAuthOrderSet("models.authOrderSet"),
   ModelsAuthLogout("models.authLogout"),
   ToolsCatalog("tools.catalog"),
   ToolsEffective("tools.effective"),
@@ -785,6 +784,7 @@ enum class GatewayMethod(
   DiagnosticsLanes("diagnostics.lanes"),
   SessionMembersListEvidence("session.members.listEvidence"),
   PluginsInspect("plugins.inspect"),
+  ModelsAuthOrderSet("models.authOrderSet"),
 }
 
 enum class GatewayEvent(
