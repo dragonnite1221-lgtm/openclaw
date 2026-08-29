@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { minimatch } from "minimatch";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -9,6 +10,24 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const scriptPath = "scripts/package-mac-app.sh";
 
 describe("packaged worker freshness", () => {
+  it.each([
+    "dist/OpenClaw.app",
+    "dist/OpenClaw-proof.app",
+    "dist/.openclaw-package.fixture/OpenClaw.app",
+  ])("bounds expanded package exclusions to the app root %s", (app) => {
+    const manifest = JSON.parse(readFileSync("package.json", "utf8")) as { files: string[] };
+    const exclusions = manifest.files
+      .filter((entry) => entry.startsWith("!"))
+      .map((entry) => entry.slice(1));
+    const entries = [app, `${app}/Contents`, `${app}/Contents/MacOS/OpenClaw`, "dist/entry.js"];
+    // npm 12 expands files globs into individual ignore rules. Exclude the app
+    // directory, which also excludes its contents, not every payload file separately.
+    const matches = entries.filter((entry) =>
+      exclusions.some((pattern) => minimatch(entry, pattern, { dot: true })),
+    );
+    expect(matches).toEqual([app]);
+  });
+
   it("rebuilds dirty JavaScript even when the old SKIP_TSC shortcut is requested", () => {
     const root = tempDirs.make("openclaw-package-worker-freshness-");
     const script = readFileSync(scriptPath, "utf8");
@@ -1747,28 +1766,33 @@ describe("package-mac-app plist stamping", () => {
     const mismatched = runRealCompiledPeekabooHarness("none", "e".repeat(40));
     expect(mismatched.status).toBe(1);
     expect(mismatched.stderr).toContain("does not match locked source");
+  });
 
-    const cleanCheckout = runRealCompiledPeekabooHarness("none");
-    expect(cleanCheckout.status, cleanCheckout.stderr).toBe(0);
-    const nestedGitlink = runRealCompiledPeekabooHarness("nested-gitlink");
-    expect(nestedGitlink.status, nestedGitlink.stderr).toBe(0);
+  // Each real Git fixture owns a separate checkout and deadline; do not aggregate
+  // independent verification scenarios into one long synchronous test.
+  it.each(["none", "nested-gitlink"] as const)(
+    "accepts committed Peekaboo source (%s)",
+    (mutation) => {
+      const result = runRealCompiledPeekabooHarness(mutation);
+      expect(result.status, result.stderr).toBe(0);
+    },
+  );
 
-    for (const mutation of [
-      "assume-unchanged",
-      "corrupt-object",
-      "dirty-gitlink",
-      "export-subst",
-      "gitlink-sibling",
-      "ignored",
-      "replacement-ref",
-      "untracked",
-    ] as const) {
-      const dirty = runRealCompiledPeekabooHarness(mutation);
-      expect(dirty.status).toBe(1);
-      expect(dirty.stderr).toContain(
-        "Compiled Peekaboo checkout does not exactly match its committed source",
-      );
-    }
+  it.each([
+    "assume-unchanged",
+    "corrupt-object",
+    "dirty-gitlink",
+    "export-subst",
+    "gitlink-sibling",
+    "ignored",
+    "replacement-ref",
+    "untracked",
+  ] as const)("rejects uncommitted Peekaboo source (%s)", (mutation) => {
+    const result = runRealCompiledPeekabooHarness(mutation);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "Compiled Peekaboo checkout does not exactly match its committed source",
+    );
   });
 
   it("restores and rejects a Swift package resolution that changes the lockfile", () => {

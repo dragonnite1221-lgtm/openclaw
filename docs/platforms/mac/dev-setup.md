@@ -34,8 +34,10 @@ it does not preserve TCC permissions. See [macOS signing](/platforms/mac/signing
 
 Packaging builds the JavaScript runtime and Control UI, then provisions a
 private Node worker from the canonical package artifact for every requested
-`BUILD_ARCHS` architecture. It verifies native capabilities and worker readiness
-in temporary state before and after signing, then replaces the previous app. `scripts/restart-mac.sh` uses
+`BUILD_ARCHS` architecture. The root worker tarball uses the repository-pinned
+pnpm packer; Corepack-only setups are supported. Packaging verifies native
+capabilities and worker readiness in temporary state before and after signing,
+then replaces the previous app. `scripts/restart-mac.sh` uses
 the same path; `SKIP_TSC=1` no longer bypasses the runtime build. Existing
 content-checked build caches still avoid unnecessary declaration work.
 

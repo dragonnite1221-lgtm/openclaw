@@ -147,7 +147,7 @@ function stagingFixture() {
   write(path.join(root, "dist/build-info.json"), '{"buildId":"unchanged-build"}');
   write(
     path.join(scripts, "package-openclaw-for-docker.mjs"),
-    `console.log(${JSON.stringify(path.join(root, "canonical.tgz"))});\n`,
+    `import assert from 'node:assert/strict';\nassert(process.argv.includes('--pnpm-pack'), 'worker package must use the repository-pinned packer');\nconsole.log(${JSON.stringify(path.join(root, "canonical.tgz"))});\n`,
   );
   write(
     path.join(scripts, "verify-mac-node-worker.mjs"),
