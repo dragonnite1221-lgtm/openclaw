@@ -244,6 +244,13 @@
   font-size: var(--control-ui-text-xs);
 }
 
+.model-providers__profile-usage-refreshing {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--control-ui-text-xs);
+}
+
 .model-providers__profile-logout:hover:not(:disabled),
 .model-providers__profile-logout:focus-visible {
   color: var(--danger);

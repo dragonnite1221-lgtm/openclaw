@@ -1080,6 +1080,34 @@ describe("renderModelProviders", () => {
     expect(text(planOnly)).toContain("No live usage data reported");
   });
 
+  it("marks cached account usage as refreshing without hiding it", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            profiles: [
+              {
+                profileId: "openai:first",
+                type: "oauth",
+                status: "ok",
+                usageRefreshPending: true,
+                usage: {
+                  providerId: "openai",
+                  windows: [{ label: "Weekly", usedPercent: 25 }],
+                },
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    const usage = container.querySelector(".model-providers__profile-usage");
+
+    expect(usage?.getAttribute("aria-busy")).toBe("true");
+    expect(text(usage)).toContain("Weekly");
+    expect(text(usage)).toContain("Refreshing");
+  });
+
   it("reorders profiles from the keyboard even while provider data refreshes", () => {
     const onProfileOrderChange = vi.fn();
     const container = mount(

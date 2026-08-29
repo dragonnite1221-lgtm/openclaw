@@ -62,7 +62,11 @@ function renderProfileUsage(profile: ProviderProfile) {
       usage.summary ||
       usage.error)
   ) {
-    return renderProviderUsageDetails(usage);
+    return html`${renderProviderUsageDetails(usage)}${profile.usageRefreshPending
+      ? html`<span class="model-providers__profile-usage-refreshing"
+          >${t("common.refreshing")}</span
+        >`
+      : nothing}`;
   }
   return html`<span class="model-providers__profile-usage-empty"
     >${t(!usage && profile.usageRefreshPending ? "common.loading" : "modelProviders.noStats")}</span
@@ -360,7 +364,11 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                   <strong title=${identity}>${identity}</strong>
                   <span>${profileMeta(profile)}</span>
                 </span>
-                <span class="model-providers__profile-usage">${renderProfileUsage(profile)}</span>
+                <span
+                  class="model-providers__profile-usage"
+                  aria-busy=${profile.usageRefreshPending ? "true" : nothing}
+                  >${renderProfileUsage(profile)}</span
+                >
                 <span class="model-providers__profile-status">${profileStatus(profile)}</span>
                 <button
                   type="button"
