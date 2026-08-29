@@ -73,7 +73,7 @@ export type ModelProviderCard = {
   /** Live provider-reported usage (quota windows, billing, cost history). */
   usage?: ProviderUsageSnapshot;
   /** Gateway source that supplied the provider-level usage snapshot. */
-  usageSource?: "auth-status" | "usage-status";
+  usageSource?: "usage-status";
   /** Locally-computed session spend for the requested window. */
   localCost?: ModelProviderLocalCost;
 };
@@ -303,7 +303,6 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
         ...(usage.costHistory ? { costHistory: usage.costHistory } : {}),
         ...(usage.error ? { error: usage.error } : {}),
       };
-      draft.card.usageSource = "auth-status";
     }
   }
 

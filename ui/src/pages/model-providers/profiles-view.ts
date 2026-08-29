@@ -52,24 +52,23 @@ function profileMeta(profile: ProviderProfile): string {
   return parts.join(" · ");
 }
 
-function renderProfileUsage(profile: ProviderProfile, pending: boolean) {
-  if (profile.usage) {
-    const hasDetails =
-      profile.usage.windows.length > 0 ||
-      Boolean(profile.usage.billing?.length) ||
-      Boolean(profile.usage.costHistory) ||
-      Boolean(profile.usage.summary) ||
-      Boolean(profile.usage.plan) ||
-      Boolean(profile.usage.error);
-    return hasDetails
-      ? renderProviderUsageDetails(profile.usage)
-      : html`<span class="model-providers__profile-usage-empty"
-          >${t("modelProviders.profiles.noUsage")}</span
-        >`;
+function renderProfileUsage(profile: ProviderProfile) {
+  const usage = profile.usage;
+  if (
+    usage &&
+    (usage.windows.length > 0 ||
+      usage.billing?.length ||
+      usage.costHistory ||
+      usage.summary ||
+      usage.error)
+  ) {
+    return renderProviderUsageDetails(usage);
   }
   return html`<span class="model-providers__profile-usage-empty"
     >${t(
-      pending ? "modelProviders.profiles.loadingUsage" : "modelProviders.profiles.noUsage",
+      !usage && profile.usageRefreshPending
+        ? "modelProviders.profiles.loadingUsage"
+        : "modelProviders.profiles.noUsage",
     )}</span
   >`;
 }
@@ -365,9 +364,7 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                   <strong title=${identity}>${identity}</strong>
                   <span>${profileMeta(profile)}</span>
                 </span>
-                <span class="model-providers__profile-usage"
-                  >${renderProfileUsage(profile, profile.usageRefreshPending === true)}</span
-                >
+                <span class="model-providers__profile-usage">${renderProfileUsage(profile)}</span>
                 <span class="model-providers__profile-status">${profileStatus(profile)}</span>
                 <button
                   type="button"
