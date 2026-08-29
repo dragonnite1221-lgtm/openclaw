@@ -115,6 +115,7 @@ export function createHarness(initialScopeId: string) {
       };
     },
   };
+  let runtimeConfigListener: (() => void) | undefined;
   const subscribe = () => () => undefined;
   const runtimeConfig = {
     state: {
@@ -140,7 +141,12 @@ export function createHarness(initialScopeId: string) {
     save: vi.fn(async () => true),
     apply: vi.fn(async () => true),
     discardDraft: vi.fn(async () => undefined),
-    subscribe,
+    subscribe(listener: () => void) {
+      runtimeConfigListener = listener;
+      return () => {
+        runtimeConfigListener = undefined;
+      };
+    },
   };
   const context = {
     gateway: gatewaySource.gateway,
@@ -175,6 +181,7 @@ export function createHarness(initialScopeId: string) {
     context,
     deferNextAuthStatus,
     notifySelection: () => selectionListener?.(),
+    notifyRuntimeConfig: () => runtimeConfigListener?.(),
     request,
     runtimeConfig,
     snapshot,

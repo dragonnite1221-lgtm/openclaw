@@ -486,7 +486,7 @@ describe("ModelProvidersPage agent scope", () => {
     const originalRequest = request.getMockImplementation()!;
     const firstSave = deferred<unknown>();
     let orderRequests = 0;
-    request.mockImplementation(async (method: string, params: unknown) => {
+    request.mockImplementation(async (method: string, params?: unknown) => {
       if (method === "models.authOrderSet") {
         orderRequests += 1;
         if (orderRequests === 1) {
@@ -510,13 +510,88 @@ describe("ModelProvidersPage agent scope", () => {
     expect(page.messages.openai).toBeUndefined();
   });
 
+  it("keeps a queued profile order until configuration work completes", async () => {
+    const { context, notifyRuntimeConfig, request, runtimeConfig } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const originalRequest = request.getMockImplementation()!;
+    const firstSave = deferred<unknown>();
+    request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === "models.authOrderSet" && requestCount(request, method) === 1) {
+        return firstSave.promise;
+      }
+      void params;
+      return originalRequest(method);
+    });
+
+    page.setProfileOrder("openai", "openai", ["openai:two", "openai:one"]);
+    await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(1));
+    page.setProfileOrder("openai", "openai", ["openai:one", "openai:two"]);
+    runtimeConfig.state.configSaving = true;
+    notifyRuntimeConfig();
+    firstSave.resolve({});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(requestCount(request, "models.authOrderSet")).toBe(1);
+    expect(page.profileOrders.openai).toEqual(["openai:one", "openai:two"]);
+
+    runtimeConfig.state.configSaving = false;
+    notifyRuntimeConfig();
+    await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(2));
+    await vi.waitFor(() => expect(page.profileOrders.openai).toBeUndefined());
+  });
+
+  it("re-resolves a configured profile order after Reset", async () => {
+    const { context, request } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const originalRequest = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === "models.authStatus") {
+        return {
+          ts: 2,
+          providers: [
+            {
+              provider: "openai",
+              displayName: "OpenAI",
+              status: "ok",
+              profiles: [
+                { profileId: "openai:one", type: "oauth", status: "ok" },
+                { profileId: "openai:two", type: "oauth", status: "ok" },
+              ],
+              profileOrder: ["openai:two", "openai:one"],
+            },
+          ],
+        };
+      }
+      void params;
+      return originalRequest(method);
+    });
+    page.data = {
+      ...EMPTY_MODEL_PROVIDERS_DATA,
+      config: {},
+      authStatus: await request("models.authStatus"),
+      updatedAt: 1,
+    } as ModelProvidersData;
+
+    page.setProfileOrder("openai", "openai", null);
+
+    await vi.waitFor(() =>
+      expect(page.data?.authStatus?.providers[0]?.profileOrder).toEqual([
+        "openai:two",
+        "openai:one",
+      ]),
+    );
+    await vi.waitFor(() => expect(page.profileOrders.openai).toBeUndefined());
+  });
+
   it("drains a queued profile order after switching agents during an active save", async () => {
     const { agentSelection, context, notifySelection, request } = createHarness("main");
     const page = appendPage(context);
     await waitForFast(() => expect(page.data?.config).toEqual({}));
     const originalRequest = request.getMockImplementation()!;
     const firstSave = deferred<unknown>();
-    request.mockImplementation(async (method: string, params: unknown) => {
+    request.mockImplementation(async (method: string, params?: unknown) => {
       if (method === "models.authOrderSet" && requestCount(request, method) === 1) {
         return firstSave.promise;
       }

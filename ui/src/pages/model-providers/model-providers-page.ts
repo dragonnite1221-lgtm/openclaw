@@ -148,11 +148,13 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
         if (!runtimeConfig.state.configSnapshot && !runtimeConfig.state.configLoading) {
           void runtimeConfig.ensureLoaded().catch(() => undefined);
         }
+        this.flushPendingProfileOrders();
       },
     )
     .watch(
       () => this.context?.overlays,
       (overlays, notify) => overlays.subscribe(notify),
+      () => this.flushPendingProfileOrders(),
     )
     .watch(
       () => this.context?.agents,
@@ -570,11 +572,14 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
         if (!pending) {
           return;
         }
-        this.pendingProfileOrders.delete(provider);
         const client = this.context.gateway.snapshot.client;
-        if (!client || !this.canMutate()) {
+        if (!client || this.mutationBlockedReason() !== null) {
           return;
         }
+        if (this.configBusy()) {
+          return;
+        }
+        this.pendingProfileOrders.delete(provider);
         const clientEpoch = this.gateway.epoch;
         const agentEpoch = this.agentEpoch;
         const agentId = this.selectedAgentId;
@@ -591,7 +596,18 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
           ) {
             return;
           }
-          this.applyProfileOrder(provider, pending.profileIds);
+          if (pending.profileIds) {
+            this.applyProfileOrder(provider, pending.profileIds);
+          } else {
+            await this.refresh({ force: true });
+            if (
+              !this.isCurrentClient(client, clientEpoch) ||
+              this.agentEpoch !== agentEpoch ||
+              this.selectedAgentId !== agentId
+            ) {
+              return;
+            }
+          }
           if (this.profileOrders[provider] === pending.optimisticOrder) {
             const { [provider]: _completed, ...remaining } = this.profileOrders;
             this.profileOrders = remaining;
@@ -619,9 +635,18 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       this.activeProfileOrderProviders.delete(provider);
       // A stale save can finish after a new agent queued the same provider.
       // Re-enter after releasing the slot so the new scope's intent is not stranded.
-      if (this.pendingProfileOrders.has(provider)) {
+      if (this.pendingProfileOrders.has(provider) && this.canMutate()) {
         void this.flushProfileOrder(provider);
       }
+    }
+  }
+
+  private flushPendingProfileOrders() {
+    if (!this.canMutate()) {
+      return;
+    }
+    for (const provider of this.pendingProfileOrders.keys()) {
+      void this.flushProfileOrder(provider);
     }
   }
 
