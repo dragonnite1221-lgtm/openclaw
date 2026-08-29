@@ -9,23 +9,24 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const fixture = fileURLToPath(new URL("../fixtures/vitest-fork-shutdown.mjs", import.meta.url));
 
 it.each([
-  { scenario: "slow-exit", setup: "shared", fail: false },
-  { scenario: "slow-exit", setup: "env", fail: true },
-  { scenario: "natural-exit", setup: "raw", fail: false },
-  { scenario: "plain", setup: "shared", fail: false },
-  { scenario: "threads", setup: "env", fail: false },
-  { scenario: "vmForks", setup: "raw", fail: false },
-  { scenario: "custom", setup: "raw", fail: false },
-  { scenario: "custom-opt-in", setup: "raw", fail: false },
-  { scenario: "hung-cleanup", setup: "shared", fail: false },
-  { scenario: "hung-exit", setup: "shared", fail: false },
-  { scenario: "bad-exit", setup: "shared", fail: false },
-  { scenario: "forced", setup: "raw", fail: false },
+  { scenario: "slow-exit", setup: "shared", fail: false, expectedProfiled: true },
+  { scenario: "slow-exit", setup: "env", fail: true, expectedProfiled: true },
+  { scenario: "natural-exit", setup: "raw", fail: false, expectedProfiled: true },
+  { scenario: "plain", setup: "shared", fail: false, expectedProfiled: false },
+  { scenario: "threads", setup: "env", fail: false, expectedProfiled: true },
+  { scenario: "vmForks", setup: "raw", fail: false, expectedProfiled: false },
+  { scenario: "custom", setup: "raw", fail: false, expectedProfiled: false },
+  { scenario: "custom-opt-in", setup: "raw", fail: false, expectedProfiled: false },
+  { scenario: "hung-cleanup", setup: "shared", fail: false, expectedProfiled: true },
+  { scenario: "hung-exit", setup: "shared", fail: false, expectedProfiled: true },
+  { scenario: "bad-exit", setup: "shared", fail: false, expectedProfiled: true },
+  { scenario: "forced", setup: "raw", fail: false, expectedProfiled: false },
 ])("joins $scenario shutdown with $setup setup (test failure: $fail)", async (options) => {
   const root = tempDirs.make("vitest-fork-shutdown-");
+  const { expectedProfiled, ...fixtureOptions } = options;
   const { stdout } = await execFileAsync(
     process.execPath,
-    [fixture, root, JSON.stringify(options)],
+    [fixture, root, JSON.stringify(fixtureOptions)],
     {
       timeout: 20_000,
       maxBuffer: 2 * 1024 * 1024,
@@ -51,6 +52,11 @@ it.each([
     expect(result.homeRemoved).toBe(!(process.platform === "win32" && scenario === "hung-cleanup"));
   }
   expect(result.callerPreserved).toBe(true);
+  expect(result.profiled).toBe(expectedProfiled);
+  if (!expectedProfiled) {
+    expect(result.profiles.cpu, result.output).toBe(0);
+    expect(result.profiles.heap, result.output).toBe(0);
+  }
   if (scenario.startsWith("hung-")) {
     // Advance the real stop deadline only after the worker reaches the hung boundary.
     expect(result.events).toContainEqual({ event: "deadline", delay: 60_000 });
@@ -68,8 +74,12 @@ it.each([
     );
     expect(result.events).toContainEqual({ event: "terminate", signal: "SIGTERM" });
   } else if (scenario !== "plain") {
-    expect(result.profiles.cpu, result.output).toBeGreaterThan(0);
-    expect(result.profiles.heap, result.output).toBeGreaterThan(0);
+    if (expectedProfiled) {
+      // Broken shutdowns cannot finish profiler cleanup, so profile validity stays
+      // scoped to successful profiled exits as it was before this routing repair.
+      expect(result.profiles.cpu, result.output).toBeGreaterThan(0);
+      expect(result.profiles.heap, result.output).toBeGreaterThan(0);
+    }
     expect(result.events.some((event: { event: string }) => event.event === "terminate")).toBe(
       false,
     );

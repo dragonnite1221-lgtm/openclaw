@@ -187,6 +187,12 @@ export default class extends Runner {
     );
   }
   const custom = scenario.startsWith("custom");
+  const poolName = custom
+    ? "custom-fork"
+    : ["threads", "vmForks"].includes(scenario)
+      ? scenario
+      : "forks";
+  const profiled = scenario !== "plain" && ["forks", "threads"].includes(poolName);
   const entrypoint = path.join(root, "custom-worker.mjs");
   if (custom) {
     fs.writeFileSync(
@@ -231,7 +237,7 @@ ${
 }
 export default {
   resolve: sharedVitestConfig.resolve, plugins: sharedVitestConfig.plugins,
-  test: { include: ["fixture.test.ts"], pool: ${custom ? '{ name: "custom-fork", createPoolWorker: (options) => new CustomFork(options) }' : JSON.stringify(["threads", "vmForks"].includes(scenario) ? scenario : "forks")},
+  test: { include: ["fixture.test.ts"], pool: ${custom ? `{ name: ${JSON.stringify(poolName)}, createPoolWorker: (options) => new CustomFork(options) }` : JSON.stringify(poolName)},
     isolate: false, maxWorkers: 1, fileParallelism: false,
     setupFiles: ${JSON.stringify(setupFiles)},
     ${setup === "shared" ? `runner: ${JSON.stringify(runner)},` : ""}
@@ -252,29 +258,28 @@ it("completes the test before worker shutdown", () => {
 });
 `,
   );
-  const args =
-    scenario === "plain" || scenario === "custom"
-      ? [
-          path.join(repo, "scripts/run-vitest.mjs"),
-          "run",
-          "--config",
-          config,
-          "--root",
-          root,
-          "--configLoader",
-          "native",
-        ]
-      : [
-          path.join(repo, "scripts/run-vitest-profile.mts"),
-          "runner",
-          "--output-dir",
-          profiles,
-          "--",
-          "--root",
-          root,
-          "--configLoader",
-          "native",
-        ];
+  const args = profiled
+    ? [
+        path.join(repo, "scripts/run-vitest-profile.mts"),
+        "runner",
+        "--output-dir",
+        profiles,
+        "--",
+        "--root",
+        root,
+        "--configLoader",
+        "native",
+      ]
+    : [
+        path.join(repo, "scripts/run-vitest.mjs"),
+        "run",
+        "--config",
+        config,
+        "--root",
+        root,
+        "--configLoader",
+        "native",
+      ];
   const { child, completion } = spawnOwnedVitestProcess({
     command: process.execPath,
     args,
@@ -288,7 +293,12 @@ it("completes the test before worker shutdown", () => {
   child.stderr.on("data", (chunk) => {
     output += chunk;
   });
-  const { code } = await completion.finally(detachCleanup);
+  const { code, signal } = await completion.finally(detachCleanup);
+  if (!fs.existsSync(receipt)) {
+    throw new Error(
+      `Vitest child exited before writing its receipt (code=${code}, signal=${signal ?? "none"}).\n${output}`,
+    );
+  }
   const state = JSON.parse(fs.readFileSync(receipt, "utf8"));
   let workerStopped = false;
   try {
@@ -314,6 +324,7 @@ it("completes the test before worker shutdown", () => {
     JSON.stringify({
       code,
       output,
+      profiled,
       workerStopped,
       profiles: counts,
       homeRemoved: !fs.existsSync(state.home),
