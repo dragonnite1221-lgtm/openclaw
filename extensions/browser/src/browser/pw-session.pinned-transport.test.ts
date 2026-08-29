@@ -79,7 +79,7 @@ afterEach(async () => {
 });
 
 describe("pw-session Playwright CDP transport", () => {
-  it("keeps HTTP fallback managed while releasing missing-context worker targets", async () => {
+  it("keeps HTTP fallback managed while releasing contextless non-browser targets", async () => {
     const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
     await new Promise<void>((resolve) => {
       server.once("listening", () => resolve());
@@ -117,30 +117,32 @@ describe("pw-session Playwright CDP transport", () => {
       // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Playwright's ConnectOverCDPTransport contract uses an onmessage property.
       transport.onmessage = (message) => delivered.push(message);
       const socket = await serverSocket;
-      const workerTypes = [
+      const contextlessTargetTypes = [
         "worker",
         "shared_worker",
         "service_worker",
         "worklet",
         "shared_storage_worklet",
         "auction_worklet",
+        "other",
+        "page",
       ];
-      for (const [index, type] of workerTypes.entries()) {
+      for (const [index, type] of contextlessTargetTypes.entries()) {
         socket.send(
           JSON.stringify({
             method: "Target.attachedToTarget",
             params: {
-              sessionId: `worker-session-${index}`,
-              targetInfo: { targetId: `worker-target-${index}`, type },
+              sessionId: `contextless-session-${index}`,
+              targetInfo: { targetId: `contextless-target-${index}`, type },
               waitingForDebugger: true,
             },
           }),
         );
       }
       const forwardedTargetInfos = [
-        { type: "page" },
         { type: "browser" },
-        { type: "other" },
+        { type: "page", browserContextId: "default-context" },
+        { type: "other", browserContextId: "default-context" },
         { type: "service_worker", browserContextId: "default-context" },
       ];
       const forwardedTargets = forwardedTargetInfos.map((targetInfo, index) => ({
@@ -156,42 +158,42 @@ describe("pw-session Playwright CDP transport", () => {
       }
 
       await vi.waitFor(() => {
-        expect(commands).toHaveLength(workerTypes.length);
+        expect(commands).toHaveLength(contextlessTargetTypes.length);
       });
       expect(commands).toEqual(
-        workerTypes.map((_type, index) =>
+        contextlessTargetTypes.map((_type, index) =>
           expect.objectContaining({
             id: expect.any(Number),
             method: "Runtime.runIfWaitingForDebugger",
-            sessionId: `worker-session-${index}`,
+            sessionId: `contextless-session-${index}`,
           }),
         ),
       );
       const firstResume = resumeCommands[0];
       if (!firstResume) {
-        throw new Error("missing first worker resume command");
+        throw new Error("missing first contextless-target resume command");
       }
       socket.send(JSON.stringify({ id: firstResume.id, result: {} }));
       await vi.waitFor(() => {
-        expect(commands).toHaveLength(workerTypes.length + 1);
+        expect(commands).toHaveLength(contextlessTargetTypes.length + 1);
       });
       expect(commands.at(-1)).toEqual(
         expect.objectContaining({
           method: "Target.detachFromTarget",
-          params: { sessionId: "worker-session-0" },
+          params: { sessionId: "contextless-session-0" },
         }),
       );
       for (const command of resumeCommands.slice(1)) {
         socket.send(JSON.stringify({ id: command.id, result: {} }));
       }
       await vi.waitFor(() => {
-        expect(commands).toHaveLength(workerTypes.length * 2);
+        expect(commands).toHaveLength(contextlessTargetTypes.length * 2);
       });
-      expect(commands.slice(workerTypes.length + 1)).toEqual(
-        workerTypes.slice(1).map((_type, index) =>
+      expect(commands.slice(contextlessTargetTypes.length + 1)).toEqual(
+        contextlessTargetTypes.slice(1).map((_type, index) =>
           expect.objectContaining({
             method: "Target.detachFromTarget",
-            params: { sessionId: `worker-session-${index + 1}` },
+            params: { sessionId: `contextless-session-${index + 1}` },
           }),
         ),
       );

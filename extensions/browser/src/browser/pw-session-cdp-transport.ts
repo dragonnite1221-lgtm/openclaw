@@ -11,20 +11,18 @@ type CdpSocketLookup = typeof dnsLookupCb;
 // Keep transport-owned replies below that range so Playwright never consumes them.
 const FIRST_INTERNAL_COMMAND_ID = -10_000;
 
-function isWorkerTargetType(type: string): boolean {
-  return (
-    type === "worker" || type.endsWith("_worker") || type === "worklet" || type.endsWith("_worklet")
-  );
-}
-
-function workerSessionWithoutContext(message: Record<string, unknown>): string | undefined {
+// Playwright exempts only the browser target before requiring browserContextId.
+// Release every other contextless target here or its assertion exits the Gateway.
+function contextlessTargetSession(message: Record<string, unknown>): string | undefined {
   if (readStringField(message, "method") !== "Target.attachedToTarget") {
     return undefined;
   }
   const params = asOptionalRecord(message.params);
   const targetInfo = asOptionalRecord(params?.targetInfo);
-  const type = readStringField(targetInfo, "type");
-  if (!type || !isWorkerTargetType(type) || readStringField(targetInfo, "browserContextId")) {
+  if (
+    readStringField(targetInfo, "type") === "browser" ||
+    readStringField(targetInfo, "browserContextId")
+  ) {
     return undefined;
   }
   return readStringField(params, "sessionId");
@@ -64,7 +62,7 @@ export async function connectOverCdpTransport(
     let transportClosed = false;
     let transportCloseScheduled = false;
     let nextInternalCommandId = FIRST_INTERNAL_COMMAND_ID;
-    const pendingWorkerResumes = new Map<number, string>();
+    const pendingContextlessTargetResumes = new Map<number, string>();
     const notifyTransportClosed = (reason: string) => {
       if (transportClosed) {
         return;
@@ -112,11 +110,11 @@ export async function connectOverCdpTransport(
       );
       return id;
     };
-    const releaseWorkerTarget = (sessionId: string) => {
+    const releaseContextlessTarget = (sessionId: string) => {
       // Chrome dispatches session and root commands independently. Wait for the
-      // resume response before detach so the hidden worker cannot stay paused.
+      // resume response before detach so the hidden target cannot stay paused.
       const resumeId = sendInternalCommand("Runtime.runIfWaitingForDebugger", undefined, sessionId);
-      pendingWorkerResumes.set(resumeId, sessionId);
+      pendingContextlessTargetResumes.set(resumeId, sessionId);
     };
     const scheduleMessage = (message: object) => {
       setImmediate(() => {
@@ -177,16 +175,16 @@ export async function connectOverCdpTransport(
         }
         const id = parsed.id;
         if (typeof id === "number" && id <= FIRST_INTERNAL_COMMAND_ID) {
-          const workerSessionId = pendingWorkerResumes.get(id);
-          if (workerSessionId) {
-            pendingWorkerResumes.delete(id);
-            sendInternalCommand("Target.detachFromTarget", { sessionId: workerSessionId });
+          const targetSessionId = pendingContextlessTargetResumes.get(id);
+          if (targetSessionId) {
+            pendingContextlessTargetResumes.delete(id);
+            sendInternalCommand("Target.detachFromTarget", { sessionId: targetSessionId });
           }
           return;
         }
-        const workerSessionId = workerSessionWithoutContext(parsed);
-        if (workerSessionId) {
-          releaseWorkerTarget(workerSessionId);
+        const contextlessSessionId = contextlessTargetSession(parsed);
+        if (contextlessSessionId) {
+          releaseContextlessTarget(contextlessSessionId);
           return;
         }
         scheduleMessage(parsed);
