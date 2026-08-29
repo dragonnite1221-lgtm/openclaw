@@ -1,3 +1,4 @@
+import pLimit from "p-limit";
 // Stale-while-revalidate cache for models.authStatus provider usage enrichment.
 import type { AuthProfileStore } from "../../agents/auth-profiles.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -17,6 +18,8 @@ import {
 
 const log = createSubsystemLogger("provider-usage-cache");
 const USAGE_CACHE_TTL_MS = 60_000;
+const PROFILE_USAGE_REFRESH_CONCURRENCY = 3;
+const profileUsageRefreshLimit = pLimit(PROFILE_USAGE_REFRESH_CONCURRENCY);
 
 export type ProviderUsageStatus = Pick<
   ProviderUsageSnapshot,
@@ -52,6 +55,7 @@ let cacheGeneration = 0;
 
 export function clearModelAuthStatusUsageCache(): void {
   cacheGeneration += 1;
+  profileUsageRefreshLimit.clearQueue();
   usageCacheByAgentId.clear();
   usageRefreshByAgentId.clear();
   clearProviderUsageRuntimeSnapshot();
@@ -155,15 +159,17 @@ function scheduleProviderUsageRefresh(params: {
     return active.promise;
   }
   const publishGeneration = cacheGeneration;
-  const promise = loadProviderUsageSummary({
-    providers: params.providerIds,
-    ...(params.authProfile ? { authProfile: params.authProfile } : {}),
-    agentDir: params.agentDir,
-    workspaceDir: params.workspaceDir,
-    authStore: params.authStore,
-    config: params.configRef,
-    timeoutMs: PROVIDER_USAGE_TIMEOUT_MS,
-  })
+  const load = () =>
+    loadProviderUsageSummary({
+      providers: params.providerIds,
+      ...(params.authProfile ? { authProfile: params.authProfile } : {}),
+      agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
+      authStore: params.authStore,
+      config: params.configRef,
+      timeoutMs: PROVIDER_USAGE_TIMEOUT_MS,
+    });
+  const promise = (params.authProfile ? profileUsageRefreshLimit(load) : load())
     .then((freshUsage) => {
       const usage = retainLastGoodOnTimeout(freshUsage, params.lastGood);
       if (
@@ -288,9 +294,13 @@ export function readProfileUsageStaleWhileRevalidate(params: {
   forceRefresh?: boolean;
   targets: Array<{ profileId: string; providerId: UsageProviderId }>;
   now: number;
-}): { usageByProfile: Map<string, ProviderUsageStatus>; refreshPending: boolean } {
+}): {
+  usageByProfile: Map<string, ProviderUsageStatus>;
+  pendingProfileIds: Set<string>;
+  refreshPending: boolean;
+} {
   const usageByProfile = new Map<string, ProviderUsageStatus>();
-  let refreshPending = false;
+  const pendingProfileIds = new Set<string>();
   const ownerPrefix = `${params.agentId}\0profile\0`;
   const activeOwners = new Set(params.targets.map((target) => `${ownerPrefix}${target.profileId}`));
   for (const ownerKey of usageCacheByAgentId.keys()) {
@@ -317,9 +327,15 @@ export function readProfileUsageStaleWhileRevalidate(params: {
     if (usage) {
       usageByProfile.set(target.profileId, usage);
     }
-    refreshPending ||= read.refreshPending;
+    if (read.refreshPending) {
+      pendingProfileIds.add(target.profileId);
+    }
   }
-  return { usageByProfile, refreshPending };
+  return {
+    usageByProfile,
+    pendingProfileIds,
+    refreshPending: pendingProfileIds.size > 0,
+  };
 }
 
 /** Returns cached provider usage while network refreshes run in the background for capable clients. */

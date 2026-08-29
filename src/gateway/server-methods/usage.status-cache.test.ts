@@ -470,6 +470,7 @@ describe("usage.status provider usage cache", () => {
     };
 
     expect(readProfileUsageStaleWhileRevalidate(params)).toMatchObject({
+      pendingProfileIds: new Set(["openai:first", "openai:second"]),
       refreshPending: true,
     });
     await vi.waitFor(() => expect(mocks.loadProviderUsageSummary).toHaveBeenCalledTimes(2));
@@ -477,6 +478,7 @@ describe("usage.status provider usage cache", () => {
 
     const warmed = readProfileUsageStaleWhileRevalidate(params);
     expect(warmed.refreshPending).toBe(false);
+    expect(warmed.pendingProfileIds).toEqual(new Set());
     expect(warmed.usageByProfile.get("openai:first")?.windows[0]?.usedPercent).toBe(10);
     expect(warmed.usageByProfile.get("openai:second")?.windows[0]?.usedPercent).toBe(20);
     expect(
@@ -485,5 +487,69 @@ describe("usage.status provider usage cache", () => {
       { provider: "openai", profileId: "openai:first" },
       { provider: "openai", profileId: "openai:second" },
     ]);
+  });
+
+  it("bounds concurrent account usage refreshes", async () => {
+    const profileIds = Array.from({ length: 6 }, (_, index) => `openai:profile-${index + 1}`);
+    store = {
+      version: 1,
+      profiles: Object.fromEntries(
+        profileIds.map((profileId) => [
+          profileId,
+          { type: "token" as const, provider: "openai", token: `${profileId}-token` },
+        ]),
+      ),
+    };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const releases: Array<() => void> = [];
+    mocks.loadProviderUsageSummary.mockImplementation(
+      (options) =>
+        new Promise((resolve) => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          releases.push(() => {
+            inFlight -= 1;
+            resolve({
+              updatedAt: now,
+              providers: [
+                {
+                  provider: "openai",
+                  displayName: "OpenAI",
+                  windows: [{ label: "week", usedPercent: 1 }],
+                },
+              ],
+            });
+          });
+          expect(options.authProfile?.profileId).toBeTruthy();
+        }),
+    );
+    const agentId = resolveDefaultAgentId(config);
+    const agentDir = resolveAgentDir(config, agentId);
+    replaceRuntimeAuthProfileStoreSnapshots([{ agentDir, store }]);
+    const snapshot = getProviderUsageRuntimeSnapshot({ config, agentId, agentDir, store });
+
+    readProfileUsageStaleWhileRevalidate({
+      agentId,
+      agentDir,
+      workspaceDir: "/tmp/workspace",
+      authStore: store,
+      configRef: config,
+      credentialKey: snapshot.credentialKey,
+      targets: profileIds.map((profileId) => ({ profileId, providerId: "openai" })),
+      now,
+    });
+
+    await vi.waitFor(() => expect(mocks.loadProviderUsageSummary).toHaveBeenCalledTimes(3));
+    expect(maxInFlight).toBe(3);
+    for (const release of releases.splice(0)) {
+      release();
+    }
+    await vi.waitFor(() => expect(mocks.loadProviderUsageSummary).toHaveBeenCalledTimes(6));
+    expect(maxInFlight).toBe(3);
+    for (const release of releases.splice(0)) {
+      release();
+    }
+    await vi.waitFor(() => expect(inFlight).toBe(0));
   });
 });

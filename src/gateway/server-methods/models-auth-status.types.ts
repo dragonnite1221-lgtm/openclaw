@@ -43,6 +43,8 @@ export type ModelAuthStatusProfile = {
   lastUsedAt?: number;
   /** Account-scoped provider quota and billing facts for this exact credential. */
   usage?: ModelAuthUsage;
+  /** This account's usage cache is refreshing in the background. */
+  usageRefreshPending?: true;
 };
 
 export type ModelAuthStatusProvider = {
