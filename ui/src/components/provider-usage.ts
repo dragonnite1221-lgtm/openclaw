@@ -7,6 +7,11 @@ import { t } from "../i18n/index.ts";
 import { formatUiExternalText } from "../lib/format-error.ts";
 import { formatCompactTokenCount } from "../lib/format.ts";
 
+export type ProviderUsageDetails = Pick<
+  ProviderUsageSnapshot,
+  "windows" | "billing" | "costHistory" | "summary" | "error"
+>;
+
 function formatProviderAmount(amount: number, unit: string): string {
   const normalizedUnit = unit.trim().toUpperCase();
   if (["USD", "EUR", "GBP", "CNY", "JPY"].includes(normalizedUnit)) {
@@ -31,7 +36,7 @@ function formatProviderReset(resetAt: number | undefined): string | null {
   }).format(new Date(resetAt));
 }
 
-function renderProviderBilling(snapshot: ProviderUsageSnapshot) {
+function renderProviderBilling(snapshot: ProviderUsageDetails) {
   return (snapshot.billing ?? []).map((entry) => {
     const label =
       entry.label ??
@@ -53,7 +58,7 @@ function renderProviderBilling(snapshot: ProviderUsageSnapshot) {
   });
 }
 
-function providerHistoryAmount(snapshot: ProviderUsageSnapshot, days: number): number {
+function providerHistoryAmount(snapshot: ProviderUsageDetails, days: number): number {
   const history = snapshot.costHistory;
   if (!history) {
     return 0;
@@ -67,7 +72,7 @@ function providerHistoryAmount(snapshot: ProviderUsageSnapshot, days: number): n
   }, 0);
 }
 
-function renderProviderCostHistory(snapshot: ProviderUsageSnapshot) {
+function renderProviderCostHistory(snapshot: ProviderUsageDetails) {
   const history = snapshot.costHistory;
   if (!history || history.daily.length === 0) {
     return nothing;
@@ -180,7 +185,7 @@ function renderProviderCostHistory(snapshot: ProviderUsageSnapshot) {
  * bars, billing rows, provider cost history, and the provider summary line.
  * The surrounding card header (name, plan badge, icon) stays surface-owned.
  */
-export function renderProviderUsageDetails(snapshot: ProviderUsageSnapshot) {
+export function renderProviderUsageDetails(snapshot: ProviderUsageDetails) {
   if (snapshot.error) {
     return html`<div class="provider-usage-error">${formatUiExternalText(snapshot.error)}</div>`;
   }

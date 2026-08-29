@@ -227,6 +227,36 @@ function renderLocalCost(card: ModelProviderCard, costDays: number) {
   `;
 }
 
+function renderProviderMetrics(
+  card: ModelProviderCard,
+  costDays: number,
+  supplementalLoading: boolean,
+) {
+  const usage = card.profiles.length === 0 ? card.usage : undefined;
+  const hasLocalCost = Boolean(
+    card.localCost && (card.localCost.totalTokens > 0 || card.localCost.totalCost > 0),
+  );
+  if (!usage && !hasLocalCost && card.profiles.length > 0) {
+    return nothing;
+  }
+  return html`
+    <div
+      class="model-providers__global-metrics"
+      aria-busy=${supplementalLoading ? "true" : "false"}
+    >
+      <div class="model-providers__global-metrics-title">${t("modelProviders.globalUsage")}</div>
+      ${usage
+        ? renderProviderUsageDetails(usage)
+        : card.profiles.length === 0
+          ? html`<div class="model-providers__no-stats">
+              ${t(supplementalLoading ? "common.loading" : "modelProviders.noStats")}
+            </div>`
+          : nothing}
+      ${renderLocalCost(card, costDays)}
+    </div>
+  `;
+}
+
 function renderCredentialSummary(card: ModelProviderCard, agentLabel: string) {
   const oauthCount = card.profiles.filter((profile) => profile.type === "oauth").length;
   const tokenCount = card.profiles.filter((profile) => profile.type === "token").length;
@@ -473,20 +503,10 @@ function renderProviderRow(card: ModelProviderCard, props: ModelProvidersViewPro
       ${card.profiles.length === 0
         ? renderCredentialSummary(card, props.credentialAgentLabel)
         : nothing}
-      <div
-        class="model-providers__global-metrics"
-        aria-busy=${props.supplementalLoading ? "true" : "false"}
-      >
-        <div class="model-providers__global-metrics-title">${t("modelProviders.globalUsage")}</div>
-        ${card.usage
-          ? renderProviderUsageDetails(card.usage)
-          : html`<div class="model-providers__no-stats">
-              ${t(props.supplementalLoading ? "common.loading" : "modelProviders.noStats")}
-            </div>`}
-        ${renderLocalCost(card, props.costDays)}
-      </div>
-      ${renderProviderActions(card, props)} ${renderKeyEditor(card, props)}
-      ${renderProbeResult(props.probeResults[card.id])} ${renderMutationMessage(message)}
+      ${renderProviderMetrics(card, props.costDays, props.supplementalLoading)}
+      ${renderProviderActions(card, props)}
+      ${renderKeyEditor(card, props)} ${renderProbeResult(props.probeResults[card.id])}
+      ${renderMutationMessage(message)}
     </div>
   `;
 }

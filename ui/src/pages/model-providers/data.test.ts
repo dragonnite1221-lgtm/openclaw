@@ -43,6 +43,27 @@ const EMPTY_INPUT = {
 const redactedConfigValue = "[redacted]";
 
 describe("buildModelProviderCards", () => {
+  it("keeps profile usage pending state and provider error details", () => {
+    const status = authStatus([
+      {
+        provider: "openai",
+        displayName: "OpenAI",
+        status: "ok",
+        profiles: [{ profileId: "p1", type: "oauth", status: "ok" }],
+        usage: {
+          providerId: "openai",
+          windows: [],
+          error: "usage failed",
+        },
+      },
+    ]);
+    status.usageRefreshPending = true;
+
+    const result = firstCard(buildModelProviderCards({ ...EMPTY_INPUT, authStatus: status }));
+    expect(result.profileUsagePending).toBe(true);
+    expect(result.usage?.error).toBe("usage failed");
+  });
+
   it("keeps catalog providers, including ones whose models are all unavailable", () => {
     const cards = buildModelProviderCards({
       ...EMPTY_INPUT,

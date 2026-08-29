@@ -499,7 +499,7 @@ describe("renderModelProviders", () => {
     );
     const provider = container.querySelector('[data-provider-id="openai"]');
     expect(text(provider)).toContain("Credentials for Writer");
-    expect(text(provider)).toContain("Global usage and cost");
+    expect(text(provider)).toContain("Usage and cost");
     expect(text(provider)).toContain("API key from environment (OPENAI_API_KEY)");
     expect(text(provider)).toContain("Connected");
     expect(text(provider)).toContain("145 ms");
@@ -620,7 +620,7 @@ describe("renderModelProviders", () => {
     expect(container.querySelector(".model-providers__defaults")).not.toBeNull();
   });
 
-  it("labels provider usage and session cost as global", () => {
+  it("labels provider usage and session cost without implying account aggregation", () => {
     const container = mount(
       props({
         cards: [
@@ -633,8 +633,8 @@ describe("renderModelProviders", () => {
 
     const provider = container.querySelector('[data-provider-id="openai"]');
     expect(text(provider)).toContain("Credentials for Writer");
-    expect(text(provider)).toContain("Global usage and cost");
-    expect(text(provider)).toContain("Global session spend · 30d");
+    expect(text(provider)).toContain("Usage and cost");
+    expect(text(provider)).toContain("Session spend · 30d");
   });
 
   it("preserves complete graphemes in custom provider fallback icons", () => {
@@ -881,6 +881,86 @@ describe("renderModelProviders", () => {
     const confirmation = mount(props({ cards: [profileCard], pendingLogout, onLogout }));
     button(confirmation, "Log out")?.click();
     expect(onLogout).toHaveBeenCalledWith("openai", pendingLogout.targets);
+  });
+
+  it("renders every account quota window, billing fact, and usage failure", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            profiles: [
+              {
+                profileId: "openai:first",
+                type: "oauth",
+                status: "ok",
+                email: "first@example.com",
+                usage: {
+                  providerId: "openai",
+                  plan: "Pro",
+                  windows: [
+                    { label: "5h", usedPercent: 25 },
+                    { label: "Weekly", usedPercent: 10 },
+                  ],
+                  billing: [{ type: "balance", amount: 12, unit: "credits" }],
+                },
+              },
+              {
+                profileId: "openai:second",
+                type: "oauth",
+                status: "expired",
+                email: "second@example.com",
+                usage: {
+                  providerId: "openai",
+                  windows: [],
+                  error: "Refresh token rejected",
+                },
+              },
+            ],
+            profileProviderIds: {
+              "openai:first": "openai",
+              "openai:second": "openai",
+            },
+            profileOrders: { openai: ["openai:first", "openai:second"] },
+          }),
+        ],
+      }),
+    );
+    const rows = container.querySelectorAll(".model-providers__profile");
+
+    expect(rows[0]?.querySelectorAll('[role="progressbar"]')).toHaveLength(2);
+    expect(text(rows[0] ?? null)).toContain("Pro");
+    expect(text(rows[0] ?? null)).toContain("12 credits");
+    expect(text(rows[1] ?? null)).toContain("Refresh token rejected");
+    expect(container.querySelector(".model-providers__global-metrics")).toBeNull();
+  });
+
+  it("distinguishes pending account usage from an unsupported usage source", () => {
+    const pending = mount(
+      props({
+        cards: [
+          card({
+            profileUsagePending: true,
+            profiles: [{ profileId: "openai:first", type: "oauth", status: "ok" }],
+          }),
+        ],
+      }),
+    );
+    expect(text(pending.querySelector(".model-providers__profile-usage"))).toContain(
+      "Loading live usage",
+    );
+
+    const unsupported = mount(
+      props({
+        cards: [
+          card({
+            profiles: [{ profileId: "openai:first", type: "oauth", status: "ok" }],
+          }),
+        ],
+      }),
+    );
+    expect(text(unsupported.querySelector(".model-providers__profile-usage"))).toContain(
+      "No live usage data reported by this account",
+    );
   });
 
   it("reorders profiles from the keyboard even while provider data refreshes", () => {

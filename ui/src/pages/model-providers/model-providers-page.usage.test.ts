@@ -129,6 +129,22 @@ describe("ModelProvidersPage usage convergence", () => {
     await vi.waitFor(() => expect(page.data?.costByProvider).toEqual([]));
   });
 
+  it("reloads auth status while account usage is pending", async () => {
+    vi.useFakeTimers();
+    focusDocument();
+    const harness = createHarness("main");
+    harness.setAccountUsagePending(true);
+    const page = appendPage(harness.context);
+    await page.updateComplete;
+    await vi.waitFor(() => expect(requestCount(harness.request, "models.authStatus")).toBe(1));
+
+    harness.setAccountUsagePending(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(requestCount(harness.request, "models.authStatus")).toBe(2);
+    expect(page.data?.authStatus?.usageRefreshPending).toBeUndefined();
+  });
+
   it("does not warn about a stall while disconnected", async () => {
     vi.useFakeTimers();
     const harness = createHarness("main");

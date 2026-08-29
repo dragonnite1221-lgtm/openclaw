@@ -45,7 +45,12 @@ export class ModelProviderSupplementalLoader {
       loadModelProviderUsage,
       (providerUsage) => ({ providerUsage }),
       (providerUsage, epoch) =>
-        this.options.refreshPolicy.markProviderUsage(providerUsage, Date.now(), epoch),
+        this.options.refreshPolicy.markProviderUsage(
+          providerUsage,
+          Date.now(),
+          epoch,
+          this.options.getData()?.authStatus?.usageRefreshPending === true,
+        ),
     );
     this.costTask = this.createTask(host, "cost", loadModelProviderCost, (costByProvider) => ({
       costByProvider,
@@ -69,11 +74,13 @@ export class ModelProviderSupplementalLoader {
       costByProvider: previous?.costByProvider ?? data.costByProvider,
     });
     this.options.setDataClient(client);
-    if (data.providerUsage !== null) {
+    const accountUsagePending = data.authStatus?.usageRefreshPending === true;
+    if (data.providerUsage !== null || accountUsagePending) {
       this.options.refreshPolicy.markProviderUsage(
         data.providerUsage,
         data.updatedAt,
         this.options.getGateway().epoch,
+        accountUsagePending,
       );
     }
     // The same route data can be adopted more than once. Core refresh cancels

@@ -111,8 +111,11 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   });
   private readonly refreshPolicy = new UsageRefreshPolicy({
     isLoading: () => this.loadClient !== null || this.supplemental.usageLoading,
-    // Usage convergence must not restart the independent local-cost request.
-    reload: () => this.supplemental.loadUsage(),
+    // Account usage is part of auth status; provider-only convergence can stay supplemental.
+    reload: () =>
+      this.data?.authStatus?.usageRefreshPending === true
+        ? this.refresh({ force: false })
+        : this.supplemental.loadUsage(),
     onIncompleteUsageExhausted: () => this.requestUpdate(),
   });
   private readonly supplemental = new ModelProviderSupplementalLoader(this, {
