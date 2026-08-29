@@ -14,6 +14,7 @@ import { renderSettingsWorkspace } from "../../components/settings-workspace.ts"
 import { t } from "../../i18n/index.ts";
 import { normalizeAgentLabel } from "../../lib/agents/display.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import { loadModelAuthStatus } from "../../lib/model-auth.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
@@ -78,6 +79,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   // Null Task runs supersede stale work without counting as a real load.
   private loadClient: GatewayBrowserClient | null = null;
   private routeDataObserved = false;
+  private authStatusClient: GatewayBrowserClient | null = null;
   // Global config writes survive agent switches; their card state does not.
   private agentEpoch = 0;
   private probeEpochs = new Map<string, number>();
@@ -109,12 +111,50 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       this.loadClient = null;
     },
   });
+  private readonly authStatusTask = new Task(this, {
+    autoRun: false,
+    task: ([client, agentId, epoch]: [GatewayBrowserClient | null, string, number], { signal }) => {
+      if (!client || !agentId) {
+        return initialState;
+      }
+      return loadModelAuthStatus(client, { agentId, signal }).then((authStatus) => ({
+        authStatus,
+        client,
+        agentId,
+        epoch,
+      }));
+    },
+    onComplete: ({ authStatus, client, agentId, epoch }) => {
+      this.authStatusClient = null;
+      const data = this.data;
+      if (
+        !data ||
+        client !== this.dataClient ||
+        agentId !== this.selectedAgentId ||
+        !this.gateway.isCurrent({ client, epoch })
+      ) {
+        return;
+      }
+      const updatedAt = Date.now();
+      this.data = { ...data, authStatus, updatedAt };
+      this.refreshPolicy.markProviderUsage(
+        data.providerUsage,
+        updatedAt,
+        epoch,
+        authStatus.usageRefreshPending === true,
+      );
+    },
+    onError: () => {
+      this.authStatusClient = null;
+    },
+  });
   private readonly refreshPolicy = new UsageRefreshPolicy({
-    isLoading: () => this.loadClient !== null || this.supplemental.usageLoading,
+    isLoading: () =>
+      this.loadClient !== null || this.authStatusClient !== null || this.supplemental.usageLoading,
     // Account usage is part of auth status; provider-only convergence can stay supplemental.
     reload: () =>
       this.data?.authStatus?.usageRefreshPending === true
-        ? this.refresh({ force: false })
+        ? this.refreshAuthStatus()
         : this.supplemental.loadUsage(),
     onIncompleteUsageExhausted: () => this.requestUpdate(),
   });
@@ -226,6 +266,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   private invalidateRequests() {
     this.loadClient = null;
     void this.refreshTask.run([null, this.selectedAgentId, false]);
+    this.cancelAuthStatusRefresh();
     this.supplemental.invalidate();
   }
 
@@ -298,10 +339,28 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       this.refreshPolicy.markLoadDeferred();
       return Promise.resolve();
     }
+    this.cancelAuthStatusRefresh();
     // Cancel the old supplemental generation before it can publish during core loading.
     this.supplemental.beginCoreRefresh(opts.force);
     this.loadClient = client;
     return this.refreshTask.run([client, this.selectedAgentId, opts.force]);
+  }
+
+  private refreshAuthStatus(): Promise<void> {
+    const client = this.gateway.client;
+    if (!this.selectedAgentId || !this.gateway.connected || !client) {
+      this.refreshPolicy.markLoadDeferred();
+      return Promise.resolve();
+    }
+    this.authStatusClient = client;
+    return this.authStatusTask.run([client, this.selectedAgentId, this.gateway.epoch]);
+  }
+
+  private cancelAuthStatusRefresh(): void {
+    // Core refresh owns the next auth snapshot; retire the narrower poll so it
+    // cannot overwrite that snapshot after the refresh completes.
+    this.authStatusClient = null;
+    void this.authStatusTask.run([null, this.selectedAgentId, this.gateway.epoch]);
   }
 
   private mutationBlockedReason(): string | null {

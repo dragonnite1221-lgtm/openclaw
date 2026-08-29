@@ -134,15 +134,33 @@ describe("ModelProvidersPage usage convergence", () => {
     focusDocument();
     const harness = createHarness("main");
     harness.setAccountUsagePending(true);
+    const pendingCost = deferred<unknown>();
+    const originalRequest = harness.request.getMockImplementation()!;
+    let costSignal: AbortSignal | undefined;
+    harness.request.mockImplementation(
+      async (method: string, _params?: unknown, options?: { signal?: AbortSignal }) => {
+        if (method === "sessions.usage") {
+          costSignal = options?.signal;
+          return pendingCost.promise;
+        }
+        return originalRequest(method);
+      },
+    );
     const page = appendPage(harness.context);
     await page.updateComplete;
     await vi.waitFor(() => expect(requestCount(harness.request, "models.authStatus")).toBe(1));
+    await vi.waitFor(() => expect(requestCount(harness.request, "sessions.usage")).toBe(1));
 
     harness.setAccountUsagePending(false);
     await vi.advanceTimersByTimeAsync(5_000);
 
     expect(requestCount(harness.request, "models.authStatus")).toBe(2);
+    expect(requestCount(harness.request, "sessions.usage")).toBe(1);
+    expect(costSignal?.aborted).toBe(false);
     expect(page.data?.authStatus?.usageRefreshPending).toBeUndefined();
+
+    pendingCost.resolve({ aggregates: { byProvider: [] } });
+    await vi.waitFor(() => expect(page.data?.costByProvider).toEqual([]));
   });
 
   it("does not warn about a stall while disconnected", async () => {
