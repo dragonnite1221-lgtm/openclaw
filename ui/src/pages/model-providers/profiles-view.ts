@@ -66,9 +66,7 @@ function renderProfileUsage(profile: ProviderProfile) {
   }
   return html`<span class="model-providers__profile-usage-empty"
     >${t(
-      !usage && profile.usageRefreshPending
-        ? "modelProviders.profiles.loadingUsage"
-        : "modelProviders.profiles.noUsage",
+      !usage && profile.usageRefreshPending ? "common.loading" : "modelProviders.profiles.noUsage",
     )}</span
   >`;
 }

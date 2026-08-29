@@ -1044,7 +1044,7 @@ describe("renderModelProviders", () => {
       }),
     );
     const pendingUsage = pending.querySelectorAll(".model-providers__profile-usage");
-    expect(text(pendingUsage[0] ?? null)).toContain("Loading live usage");
+    expect(text(pendingUsage[0] ?? null)).toContain("Loading");
     expect(text(pendingUsage[1] ?? null)).toContain("No live usage data reported by this account");
 
     const unsupported = mount(

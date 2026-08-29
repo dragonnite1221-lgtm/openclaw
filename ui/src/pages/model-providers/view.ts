@@ -237,16 +237,15 @@ function renderProviderMetrics(
   costDays: number,
   supplementalLoading: boolean,
 ) {
+  const hasProfiles = card.profiles.length > 0;
   const hasProfileUsage = card.profiles.some((profile) => profile.usage !== undefined);
-  const hasIndependentProviderUsage = card.usageSource === "usage-status";
   const usage =
-    hasProfileUsage && !hasIndependentProviderUsage && !hasApiKeyCredential(card)
+    hasProfileUsage && card.usageSource !== "usage-status" && !hasApiKeyCredential(card)
       ? undefined
       : card.usage;
-  const hasLocalCost = Boolean(
-    card.localCost && (card.localCost.totalTokens > 0 || card.localCost.totalCost > 0),
-  );
-  if (!usage && !hasLocalCost && card.profiles.length > 0) {
+  const hasLocalCost =
+    card.localCost && (card.localCost.totalTokens > 0 || card.localCost.totalCost > 0);
+  if (!usage && !hasLocalCost && hasProfiles) {
     return nothing;
   }
   return html`
@@ -257,7 +256,7 @@ function renderProviderMetrics(
       <div class="model-providers__global-metrics-title">${t("modelProviders.globalUsage")}</div>
       ${usage
         ? renderProviderUsageDetails(usage)
-        : card.profiles.length === 0
+        : !hasProfiles
           ? html`<div class="model-providers__no-stats">
               ${t(supplementalLoading ? "common.loading" : "modelProviders.noStats")}
             </div>`
@@ -514,9 +513,8 @@ function renderProviderRow(card: ModelProviderCard, props: ModelProvidersViewPro
         ? renderCredentialSummary(card, props.credentialAgentLabel)
         : nothing}
       ${renderProviderMetrics(card, props.costDays, props.supplementalLoading)}
-      ${renderProviderActions(card, props)}
-      ${renderKeyEditor(card, props)} ${renderProbeResult(props.probeResults[card.id])}
-      ${renderMutationMessage(message)}
+      ${renderProviderActions(card, props)} ${renderKeyEditor(card, props)}
+      ${renderProbeResult(props.probeResults[card.id])} ${renderMutationMessage(message)}
     </div>
   `;
 }
