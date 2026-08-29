@@ -53,11 +53,11 @@ export type ModelProviderCard = {
   displayName: string;
   auth?: ModelProviderAuthSummary;
   profiles: ModelAuthStatusProfile[];
-  /** Provider route and priority owner for each visible profile. */
+  /** Gateway auth owner used for priority changes to each visible profile. */
   profileProviderIds: Record<string, string>;
-  /** Explicit priority, or inventory order while selection is automatic, by provider route. */
+  /** Explicit priority, or inventory order while selection is automatic, by auth owner. */
   profileOrders: Record<string, string[]>;
-  /** Provider routes whose stored priority can be reset. */
+  /** Auth owners whose stored priority can be reset. */
   profileOrderStoredProviders: string[];
   apiKey?: ModelAuthStatusProvider["apiKey"];
   hasConfigApiKey: boolean;
@@ -256,17 +256,19 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     draft.card.displayName = provider.displayName || draft.card.displayName;
     draft.card.profiles.push(...provider.profiles);
     if (provider.profiles.length > 0) {
+      const authProvider = provider.authProvider || provider.provider;
       for (const profile of provider.profiles) {
-        draft.card.profileProviderIds[profile.profileId] = provider.provider;
+        draft.card.profileProviderIds[profile.profileId] = authProvider;
       }
-      draft.card.profileOrders[provider.provider] = provider.profileOrder
-        ? [...provider.profileOrder]
-        : provider.profiles.map((profile) => profile.profileId);
+      const order = provider.profileOrder ?? provider.profiles.map((profile) => profile.profileId);
+      draft.card.profileOrders[authProvider] = [
+        ...new Set([...(draft.card.profileOrders[authProvider] ?? []), ...order]),
+      ];
       if (
         provider.profileOrderStored === true &&
-        !draft.card.profileOrderStoredProviders.includes(provider.provider)
+        !draft.card.profileOrderStoredProviders.includes(authProvider)
       ) {
-        draft.card.profileOrderStoredProviders.push(provider.provider);
+        draft.card.profileOrderStoredProviders.push(authProvider);
       }
     }
     if (provider.apiKey || provider.profiles.length > 0) {

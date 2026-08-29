@@ -174,6 +174,38 @@ describe("buildModelProviderCards", () => {
     ]);
   });
 
+  it("groups alias profile priority under the shared auth owner", () => {
+    const cards = buildModelProviderCards({
+      ...EMPTY_INPUT,
+      authStatus: authStatus([
+        {
+          provider: "anthropic",
+          authProvider: "anthropic",
+          displayName: "Claude",
+          status: "ok",
+          profiles: [{ profileId: "p1", type: "oauth", status: "ok" }],
+          profileOrder: ["p2", "p1"],
+          profileOrderStored: true,
+        },
+        {
+          provider: "claude-cli",
+          authProvider: "anthropic",
+          displayName: "Claude",
+          status: "ok",
+          profiles: [{ profileId: "p2", type: "oauth", status: "ok" }],
+          profileOrder: ["p2", "p1"],
+          profileOrderStored: true,
+        },
+      ]),
+    });
+
+    expect(firstCard(cards)).toMatchObject({
+      profileProviderIds: { p1: "anthropic", p2: "anthropic" },
+      profileOrders: { anthropic: ["p2", "p1"] },
+      profileOrderStoredProviders: ["anthropic"],
+    });
+  });
+
   it("keeps a credential-less missing route visible beside CLI OAuth", () => {
     const cards = buildModelProviderCards({
       ...EMPTY_INPUT,
