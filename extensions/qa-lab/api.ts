@@ -62,6 +62,7 @@ export {
   TINY_PNG_BASE64,
   type MockOpenAiRequestSnapshot,
 } from "./src/providers/mock-openai/mock-openai-contracts.js";
+export { buildToolCallEventsWithArgs } from "./src/providers/mock-openai/mock-openai-tooling.js";
 export { startQaMockOpenAiServer } from "./src/providers/mock-openai/server.js";
 export { renderQaMarkdownReport, type QaReportCheck, type QaReportScenario } from "./src/report.js";
 export {

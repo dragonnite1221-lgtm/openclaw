@@ -18,6 +18,13 @@ import type {
 } from "../../skills/workshop/types.js";
 import { readPositiveIntegerParam, readToolStringParam, ToolInputError } from "./common.js";
 
+export function requireProposalContent(content: string | undefined): string {
+  if (content === undefined) {
+    throw new ToolInputError("proposal_content required");
+  }
+  return content;
+}
+
 export function assertAutonomousSkillSize(
   name: string,
   description: string | undefined,

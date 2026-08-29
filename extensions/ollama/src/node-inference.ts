@@ -423,6 +423,10 @@ async function invokeNode(
 export function createOllamaNodeInferenceTool(api: OpenClawPluginApi): AnyAgentTool {
   return {
     ...ollamaNodeInferenceToolDefinition,
+    classifyEffect(input) {
+      const action = asNullableRecord(input)?.action;
+      return action === "discover" ? "read" : action === "run" ? "mutation" : "unknown";
+    },
     execute: async (_toolCallId, args, signal) => {
       throwIfOllamaRequestAborted(signal);
       const params = asNullableRecord(args) ?? {};

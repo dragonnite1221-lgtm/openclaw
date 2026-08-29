@@ -53,10 +53,12 @@ import {
   applyAgentDefaultModelConfig,
   buildMediaReferenceDetails,
   buildTaskRunDetails,
+  classifyMediaGenerateEffect,
   createCapabilityProviderRuntimeDeps,
   hasExplicitMediaModel,
   hasGenerationToolAvailability,
   loadMediaToolReferences,
+  MEDIA_GENERATE_ACTIONS,
   normalizeMediaReferenceInputs,
   readGenerationTimeoutMs,
   resolveCapabilityModelConfigForTool,
@@ -88,6 +90,7 @@ const MAX_GENERATED_VIDEO_PROBES = 8;
 const VideoGenerateToolProperties = {
   action: Type.Optional(
     Type.String({
+      enum: [...MEDIA_GENERATE_ACTIONS],
       description: '"generate" default, "status" active task, "list" providers/models.',
     }),
   ),
@@ -842,6 +845,7 @@ export function createVideoGenerateTool(options?: {
       (includeAudioReferences ? "; audio refs condition sound" : "") +
       ". resolution up to 4K; audio/watermark toggles. action=list discovers providers/models. Session chat background: call once/request, await, then visible reply + structured media. status checks active task. Duration may round to provider value.",
     parameters: createVideoGenerateToolSchema({ includeAudioReferences }),
+    classifyEffect: classifyMediaGenerateEffect,
     execute: async (_toolCallId, rawArgs, signal) => {
       const args = rawArgs as Record<string, unknown>;
       const action = resolveGenerateAction(args);

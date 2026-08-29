@@ -160,6 +160,7 @@ describe("hooks.status", () => {
     expect(denied).toHaveBeenCalledWith(false, undefined, {
       code: "FORBIDDEN",
       message: "missing scope: operator.read",
+      requestEffect: "not_started",
       details: {
         code: "MISSING_SCOPE",
         missingScope: "operator.read",

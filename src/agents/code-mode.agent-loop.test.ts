@@ -28,6 +28,7 @@ import { Agent } from "./runtime/index.js";
 import { createReadTool } from "./sessions/tools/read.js";
 import { isToolResultError, readToolResultDetails } from "./tool-result-error.js";
 import { jsonResult, ToolInputError, type AnyAgentTool } from "./tools/common.js";
+import { createCronTool } from "./tools/cron-tool.js";
 
 const model: Model = {
   id: "test-model",
@@ -441,6 +442,28 @@ describe("Code Mode agent-loop error recovery", () => {
     });
   });
 
+  it("recovers from an Automations create-only update field and commits the correction once", async () => {
+    const gatewayCalls: string[] = [];
+    const callGatewayTool = vi.fn(async (method: string) => {
+      gatewayCalls.push(method);
+      return { id: "job-1", name: "daily", enabled: method !== "cron.update" };
+    });
+    const automations = createCronTool(undefined, { callGatewayTool: callGatewayTool as never });
+
+    const { providerContexts, reconciliationCandidates } = await runCodeModeAgent({
+      hiddenTools: [automations],
+      harness: createSubscribedCodeModeHarness({ name: "automations-owner-preflight" }),
+      programs: [
+        'json(await automations({ action: "get", jobId: "job-1" })); return await automations({ action: "update", jobId: "job-1", job: { owner: { agentId: "main" }, enabled: false } });',
+        'return await automations({ action: "update", jobId: "job-1", job: { enabled: false } });',
+      ],
+    });
+
+    expect(providerContexts).toHaveLength(3);
+    expect(gatewayCalls).toEqual(["cron.get", "cron.update"]);
+    expect(reconciliationCandidates).toBe(0);
+  });
+
   it("returns an exact replay-safe post-dispatch failure for ordinary recovery", async () => {
     const readOnly = fakeTool("sessions_history", "Read session history");
     readOnly.execute = vi.fn(async () => {
@@ -461,31 +484,49 @@ describe("Code Mode agent-loop error recovery", () => {
     expect(reconciliationCandidates).toBe(0);
   });
 
-  it("uses the terminal owner's input-aware read receipt for ordinary recovery", async () => {
-    const mixedAction = fakeTool("message", "Read or mutate messages");
-    mixedAction.parameters = {
-      type: "object",
-      properties: { action: { type: "string" } },
-      required: ["action"],
-    };
-    mixedAction.execute = vi.fn(async () => {
-      throw new Error("read-only operation failed after dispatch");
-    }) as AnyAgentTool["execute"];
-    const recover = pluginToolWithExecute("recover_task", "Recover the task", async () =>
-      jsonResult({ recovered: true }),
-    );
+  it.each([
+    { action: "read", continued: true },
+    { action: "write", continued: false },
+  ] as const)(
+    "uses a plugin owner's input-aware $action receipt",
+    async ({ action, continued }) => {
+      const mixedAction = fakeTool("plugin_mixed", "Read or mutate plugin state");
+      mixedAction.parameters = {
+        type: "object",
+        properties: { action: { type: "string" } },
+        required: ["action"],
+      };
+      mixedAction.classifyEffect = (input) =>
+        typeof input === "object" && input !== null && "action" in input && input.action === "read"
+          ? "read"
+          : "mutation";
+      mixedAction.execute = vi.fn(async () => {
+        throw new Error("plugin operation failed after dispatch");
+      }) as AnyAgentTool["execute"];
+      setPluginToolMeta(mixedAction, {
+        pluginId: "mixed-action-receipt-test",
+        optional: false,
+        sideEffecting: true,
+      });
+      const recover = pluginToolWithExecute("recover_task", "Recover the task", async () =>
+        jsonResult({ recovered: true }),
+      );
 
-    const { providerContexts, reconciliationCandidates } = await runCodeModeAgent({
-      hiddenTools: [mixedAction, recover],
-      harness: createSubscribedCodeModeHarness({ name: "input-aware-read-receipt" }),
-      programs: ['return await message({ action: "read" });', "return await recover_task({});"],
-    });
+      const { providerContexts, reconciliationCandidates } = await runCodeModeAgent({
+        hiddenTools: [mixedAction, recover],
+        harness: createSubscribedCodeModeHarness({ name: `plugin-${action}-receipt` }),
+        programs: [
+          `return await plugin_mixed({ action: ${JSON.stringify(action)} });`,
+          "return await recover_task({});",
+        ],
+      });
 
-    expect(providerContexts).toHaveLength(3);
-    expect(mixedAction.execute).toHaveBeenCalledOnce();
-    expect(recover.execute).toHaveBeenCalledOnce();
-    expect(reconciliationCandidates).toBe(0);
-  });
+      expect(providerContexts).toHaveLength(continued ? 3 : 1);
+      expect(mixedAction.execute).toHaveBeenCalledOnce();
+      expect(recover.execute).toHaveBeenCalledTimes(continued ? 1 : 0);
+      expect(reconciliationCandidates).toBe(continued ? 0 : 1);
+    },
+  );
 
   it("uses the namespace owner's local read receipt for ordinary recovery", async () => {
     const listResources = mcpTool({

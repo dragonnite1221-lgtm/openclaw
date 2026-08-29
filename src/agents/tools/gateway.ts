@@ -12,6 +12,7 @@ import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
+import { readGatewayRequestEffect } from "../../../packages/gateway-protocol/src/gateway-error-details.js";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/schema/error-codes.js";
 import { getRuntimeConfig, resolveGatewayPort } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -35,6 +36,7 @@ import {
   type DeviceIdentity,
 } from "../../infra/device-identity.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { registerToolEffectReceipt } from "../tool-effect-receipt.js";
 import { readPositiveIntegerParam, readToolStringParam } from "./common.js";
 import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import { getGatewaySessionSpawnContext } from "./gateway-session-spawn-context.js";
@@ -627,21 +629,38 @@ export async function callGatewayTool<T = Record<string, unknown>>(
     return await callGateway<T>(callOptions);
   } catch (error) {
     if (method === "node.invoke" && isStaleGatewayNodeInvokeTurnSourceRejection(error)) {
-      return await callGateway<T>({
-        ...callOptions,
-        params: stripNodeInvokeTurnSource(callOptions.params),
-      });
-    }
-    if (agentRuntimeIdentityToken && isStaleGatewayAgentRuntimeIdentityRejection(error)) {
-      if (method === "node.invoke" && extra?.requireAgentRuntimeIdentity !== true) {
+      try {
         return await callGateway<T>({
           ...callOptions,
           params: stripNodeInvokeTurnSource(callOptions.params),
-          agentRuntimeIdentityToken: undefined,
         });
+      } catch (retryError) {
+        throw registerGatewayToolRequestEffect(retryError);
+      }
+    }
+    if (agentRuntimeIdentityToken && isStaleGatewayAgentRuntimeIdentityRejection(error)) {
+      if (method === "node.invoke" && extra?.requireAgentRuntimeIdentity !== true) {
+        try {
+          return await callGateway<T>({
+            ...callOptions,
+            params: stripNodeInvokeTurnSource(callOptions.params),
+            agentRuntimeIdentityToken: undefined,
+          });
+        } catch (retryError) {
+          throw registerGatewayToolRequestEffect(retryError);
+        }
       }
       throw staleGatewayAgentRuntimeIdentityError(error);
     }
-    throw error;
+    throw registerGatewayToolRequestEffect(error);
   }
+}
+
+function registerGatewayToolRequestEffect(error: unknown): unknown {
+  const effect = readGatewayRequestEffect(error);
+  return effect === "not_started"
+    ? registerToolEffectReceipt(error, { state: "not_started" })
+    : effect === "failed_no_effect"
+      ? registerToolEffectReceipt(error, { state: "failed_no_effect" })
+      : error;
 }

@@ -69,6 +69,7 @@ describe("typed gateway method validation", () => {
       expect.objectContaining({
         code: "INVALID_REQUEST",
         message: expect.stringContaining("invalid conversations.list params"),
+        requestEffect: "not_started",
       }),
     );
   });

@@ -24,7 +24,10 @@ import type {
 import { sanitizeTranscriptSourceLocator } from "../../transcripts/source-locator.js";
 import { TranscriptsStore, transcriptSessionSelector } from "../../transcripts/store.js";
 import { truncateUtf16Safe } from "../../utils.js";
+import { stringEnum } from "../schema/typebox.js";
+import { createActionEffectClassifier } from "../tool-effect-receipt.js";
 import type { AnyAgentTool } from "./common.js";
+import { ToolInputError } from "./common.js";
 import {
   activeSessions,
   authorizeTranscriptSource,
@@ -54,6 +57,14 @@ const AUTO_START_RETRY_MS = 5_000;
 const AUTO_START_STOP_TIMEOUT_MS = 5_000;
 const AUTO_START_PROVIDER_READY_TIMEOUT_MS = 30_000;
 const STATUS_SELECTOR_LIMIT = 3;
+const TRANSCRIPT_ACTIONS = ["start", "stop", "status", "import", "summarize"] as const;
+const classifyTranscriptEffect = createActionEffectClassifier({
+  start: "mutation",
+  stop: "mutation",
+  status: "read",
+  import: "mutation",
+  summarize: "mutation",
+});
 
 function formatAutoStopDiagnostic(value: unknown): string {
   return JSON.stringify(truncateUtf16Safe(sanitizeTerminalText(formatErrorMessage(value)), 300));
@@ -61,7 +72,7 @@ function formatAutoStopDiagnostic(value: unknown): string {
 
 const TranscriptsSchema = Type.Object(
   {
-    action: Type.String({
+    action: stringEnum(TRANSCRIPT_ACTIONS, {
       description: "start, stop, status, import, or summarize.",
     }),
     sessionId: Type.Optional(
@@ -89,6 +100,18 @@ const TranscriptsSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+function assertTranscriptSelectionInput(params: Record<string, unknown>): void {
+  const action = readTranscriptStringParam(params, "action", { required: true, trim: true });
+  const hasSelector = params.selector !== undefined;
+  const hasSessionId = params.sessionId !== undefined;
+  if (hasSelector && action !== "stop" && action !== "summarize") {
+    throw new ToolInputError("selector is only supported for stop or summarize");
+  }
+  if ((action === "stop" || action === "summarize") && hasSelector === hasSessionId) {
+    throw new ToolInputError("Provide exactly one of selector or sessionId for stop or summarize");
+  }
+}
 
 function createStore(ctx: TranscriptsRuntimeContext): TranscriptsStore {
   return new TranscriptsStore(path.join(ctx.stateDir, "transcripts"), {
@@ -473,16 +496,23 @@ export function createTranscriptsTool(options?: {
     description:
       "Start, stop, import, summarize, or inspect meeting transcript captures and historical notes.",
     parameters: TranscriptsSchema,
+    classifyEffect: classifyTranscriptEffect,
+    finalizeBeforeToolCallParams: (rawParams) => {
+      const params = asOptionalRecord(rawParams);
+      if (!params) {
+        throw new ToolInputError("transcripts arguments must be an object");
+      }
+      assertTranscriptSelectionInput(params);
+      return rawParams;
+    },
     async execute(_toolCallId, rawParams, signal) {
       const config = resolveTranscriptsConfig(ctx.config?.transcripts);
       if (!config.enabled) {
         throw new Error("transcripts are disabled");
       }
       const params = asOptionalRecord(rawParams) ?? {};
+      assertTranscriptSelectionInput(params);
       const action = readTranscriptStringParam(params, "action", { required: true, trim: true });
-      if (params.selector !== undefined && action !== "stop" && action !== "summarize") {
-        throw new Error("selector is only supported for stop or summarize.");
-      }
       const store = createStore(ctx);
       switch (action) {
         case "start":

@@ -15,6 +15,7 @@ data class GatewayProtocolError(
   val code: String,
   val message: String,
   val details: JsonElement? = null,
+  val requestEffect: String? = null,
   val retryable: Boolean? = null,
   val retryAfterMs: Long? = null,
 )

@@ -146,6 +146,15 @@ describe("WhatsApp call tool", () => {
       setupCommand: `mkdir -p ${quotePosixShellArgForExpected(stateDir)} && chmod 700 ${quotePosixShellArgForExpected(stateDir)} && meowcaller pair --store ${quotePosixShellArgForExpected(path.join(stateDir, "wa-voip.db"))}`,
     });
     expect(JSON.stringify(tool?.parameters)).not.toContain('"to"');
+    expect(tool?.classifyEffect?.({ action: "status" })).toBe("read");
+    expect(tool?.classifyEffect?.({ action: "call" })).toBe("mutation");
+  });
+
+  it("rejects unknown actions before entering call setup", async () => {
+    const tool = resolveRegisteredCallTool(createApi(), createContext());
+    await expect(tool?.execute("call-invalid-action", { action: "future" })).rejects.toThrow(
+      'action must be "status" or "call"',
+    );
   });
 
   it("synthesizes a private WAV and calls only the current requester", async () => {

@@ -211,6 +211,7 @@ async function expectRpcNodePairingApprovalRejected(params: {
   commands: string[];
   expectedMissingScope: string;
   expectedRequiredScopes: string[];
+  requestEffect?: "not_started";
 }): Promise<void> {
   const ws = await openTrackedWs(params.started.port);
   try {
@@ -235,6 +236,7 @@ async function expectRpcNodePairingApprovalRejected(params: {
     expect(approve.error).toEqual({
       code: "FORBIDDEN",
       message: `missing scope: ${params.expectedMissingScope}`,
+      ...(params.requestEffect ? { requestEffect: params.requestEffect } : {}),
       details: {
         code: "MISSING_SCOPE",
         missingScope: params.expectedMissingScope,
@@ -374,6 +376,7 @@ describe("gateway node pairing authorization", () => {
         commands: ["system.run"],
         expectedMissingScope: "operator.pairing",
         expectedRequiredScopes: ["operator.pairing"],
+        requestEffect: "not_started",
       });
     });
   });

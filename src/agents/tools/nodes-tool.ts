@@ -4,6 +4,7 @@
  * Manages node pairing, notifications, device state, media capture, and approved command invocation.
  */
 import crypto from "node:crypto";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Type } from "typebox";
 import { readConnectPairingRequiredMessage } from "../../../packages/gateway-protocol/src/connect-error-details.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -19,6 +20,7 @@ import {
   optionalStringEnum,
   stringEnum,
 } from "../schema/typebox.js";
+import type { ToolEffectClassifier } from "../tool-effect-receipt.js";
 import { type AnyAgentTool, jsonResult, readToolStringParam } from "./common.js";
 import { gatewayCallOptionSchemaProperties } from "./gateway-schema.js";
 import { callGatewayTool, readGatewayCallOptions } from "./gateway.js";
@@ -59,6 +61,34 @@ const CAMERA_FACING = ["front", "back", "both"] as const;
 const CAMERA_PTZ_OPERATIONS = ["status", "set", "move", "home"] as const;
 const LOCATION_ACCURACY = ["coarse", "balanced", "precise"] as const;
 type GatewayCallOptions = ReturnType<typeof readGatewayCallOptions>;
+
+const NODES_READ_ACTIONS = new Set([
+  "status",
+  "describe",
+  "pending",
+  "camera_list",
+  "photos_latest",
+  "screen_snapshot",
+  "location_get",
+  "notifications_list",
+  "device_status",
+  "device_info",
+  "device_permissions",
+  "device_health",
+  "which",
+]);
+
+const classifyNodesEffect: ToolEffectClassifier = (input) => {
+  const params = isRecord(input) ? input : {};
+  const action = typeof params.action === "string" ? params.action : "";
+  if (NODES_READ_ACTIONS.has(action)) {
+    return "read";
+  }
+  if (action === "camera_ptz") {
+    return params.ptzOperation === "status" ? "read" : "mutation";
+  }
+  return NODES_TOOL_ACTIONS.some((candidate) => candidate === action) ? "mutation" : "unknown";
+};
 
 function resolveApproveScopes(commands: unknown): OperatorScope[] {
   return resolveNodePairApprovalScopes(commands) as OperatorScope[];
@@ -189,6 +219,7 @@ export function createNodesTool(options?: {
     description:
       "Paired nodes: status/list with active-computer presence; pass node to describe/control. Pairing lifecycle (pending/approve/reject), notify, camera_snap/camera_list/camera_clip (with audio), camera_ptz for physical camera pan/tilt/zoom, photos_latest, screen_snapshot, screen_record video, location_get, notifications_list + notifications_action (open/dismiss/reply), device_status/device_info/device_permissions/device_health, executable lookup (which + bins), generic invoke. File transfer is a separate capability.",
     parameters: NodesToolSchema,
+    classifyEffect: classifyNodesEffect,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });

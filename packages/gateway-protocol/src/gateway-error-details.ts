@@ -1,4 +1,7 @@
+import { GatewayRequestEffects, type GatewayRequestEffect } from "./gateway-request-effect.js";
 import { asProtocolRecord } from "./protocol-value-normalization.js";
+
+export { GatewayRequestEffects, type GatewayRequestEffect } from "./gateway-request-effect.js";
 
 /** Gateway JSON-RPC style error codes shared by clients and server handlers. */
 export const ErrorCodes = {
@@ -119,6 +122,43 @@ type GatewayErrorLike = {
   message?: unknown;
   details?: unknown;
 };
+
+type GatewayRequestEffectError<T extends object> = T & {
+  requestEffect: GatewayRequestEffect;
+};
+
+function withGatewayRequestEffect<T extends object>(
+  error: T,
+  requestEffect: GatewayRequestEffect,
+): GatewayRequestEffectError<T> {
+  return {
+    ...error,
+    requestEffect,
+  };
+}
+
+/** Adds owner-authored no-dispatch proof without replacing method-specific details. */
+export function withGatewayRequestNotStarted<T extends object>(
+  error: T,
+): GatewayRequestEffectError<T> {
+  return withGatewayRequestEffect(error, GatewayRequestEffects.NOT_STARTED);
+}
+
+/** Adds owner-authored proof that a started request completed without mutation. */
+export function withGatewayRequestFailedNoEffect<T extends object>(
+  error: T,
+): GatewayRequestEffectError<T> {
+  return withGatewayRequestEffect(error, GatewayRequestEffects.FAILED_NO_EFFECT);
+}
+
+/** Reads the Gateway owner's request-effect proof without parsing operator-facing prose. */
+export function readGatewayRequestEffect(error: unknown): GatewayRequestEffect | undefined {
+  const record = asProtocolRecord(error);
+  return record?.requestEffect === GatewayRequestEffects.NOT_STARTED ||
+    record?.requestEffect === GatewayRequestEffects.FAILED_NO_EFFECT
+    ? record.requestEffect
+    : undefined;
+}
 
 const LEGACY_MISSING_SCOPE_PATTERN = /\bmissing scope:\s*([a-z0-9._-]+)/i;
 const SHA256_PATTERN = /^[a-fA-F0-9]{64}$/;

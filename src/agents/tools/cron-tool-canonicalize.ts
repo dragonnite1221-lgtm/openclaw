@@ -7,6 +7,8 @@ import { timestampMsToIsoString } from "@openclaw/normalization-core/number-coer
 import { hasNonEmptyString as isNonEmptyString } from "@openclaw/normalization-core/string-coerce";
 import { isRecord } from "../../utils.js";
 import { isStringOption } from "../../utils/string-readers.js";
+import { createActionEffectClassifier } from "../tool-effect-receipt.js";
+import { ToolInputError } from "./common.js";
 
 const CRON_SCHEDULE_KINDS = ["at", "every", "cron", "on-exit", "stream"] as const;
 const CRON_PAYLOAD_KINDS = ["systemEvent", "agentTurn", "script"] as const;
@@ -47,7 +49,6 @@ const CRON_RECOVERABLE_OBJECT_KEYS: ReadonlySet<string> = new Set([
   "name",
   "declarationKey",
   "displayName",
-  "owner",
   "schedule",
   "pacing",
   "trigger",
@@ -67,6 +68,36 @@ const CRON_RECOVERABLE_OBJECT_KEYS: ReadonlySet<string> = new Set([
   ...CRON_FLAT_PAYLOAD_KEYS,
   ...CRON_FLAT_SCHEDULE_KEYS,
 ]);
+
+export const classifyCronToolEffect = createActionEffectClassifier({
+  status: "read",
+  list: "read",
+  get: "read",
+  runs: "read",
+  add: "mutation",
+  update: "mutation",
+  remove: "mutation",
+  run: "mutation",
+  next_check: "mutation",
+  wake: "mutation",
+});
+
+export function assertCronToolOwnershipInput(
+  action: string,
+  params: Record<string, unknown>,
+): void {
+  if (!isRecord(params.job)) {
+    return;
+  }
+  if (Object.hasOwn(params.job, "owner")) {
+    throw new ToolInputError(
+      "job.owner is host-authored from the authenticated caller and cannot be supplied",
+    );
+  }
+  if (action === "update" && Object.hasOwn(params.job, "declarationKey")) {
+    throw new ToolInputError("job.declarationKey is add-only and cannot be updated");
+  }
+}
 
 function isCronScheduleKind(value: unknown): value is (typeof CRON_SCHEDULE_KINDS)[number] {
   return isStringOption(value, CRON_SCHEDULE_KINDS);

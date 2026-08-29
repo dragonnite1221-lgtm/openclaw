@@ -227,6 +227,15 @@ describe("createNodesTool screen_record duration guardrails", () => {
     expect(schema.properties?.limit?.maximum).toBe(20);
   });
 
+  it("classifies read actions without hiding device mutations", () => {
+    const classify = createNodesTool().classifyEffect;
+    expect(classify?.({ action: "status" })).toBe("read");
+    expect(classify?.({ action: "camera_ptz", ptzOperation: "status" })).toBe("read");
+    expect(classify?.({ action: "camera_ptz", ptzOperation: "move" })).toBe("mutation");
+    expect(classify?.({ action: "notify" })).toBe("mutation");
+    expect(classify?.({ action: "future_action" })).toBe("unknown");
+  });
+
   it("advertises node media numeric constraints in the tool schema", () => {
     const tool = createNodesTool();
     const schema = tool.parameters as {

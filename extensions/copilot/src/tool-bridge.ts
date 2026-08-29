@@ -726,15 +726,19 @@ async function executeCatalogTool(
       ? (extractToolErrorMessage(sanitizedResult) ?? "tool returned an error")
       : undefined;
     terminalObserved = true;
-    input.attemptParams?.observeToolTerminal?.({
+    const terminalResolution = input.attemptParams?.observeToolTerminal?.({
       toolCallId: params.toolCallId,
       toolName: params.toolName,
       arguments: preparedArgs,
       executionStarted,
+      replaySafe: params.replaySafe,
       outcome: isError ? "failure" : "success",
       ...(error ? { failure: { error } } : {}),
       ...(ownerMutation ? { ownerMutation } : {}),
     });
+    if (terminalResolution) {
+      params.bindEffectReceipt?.(result, terminalResolution.effectReceipt);
+    }
     input.attemptParams?.onAgentToolResult?.({
       toolName: params.toolName,
       result: sanitizedResult,
@@ -754,15 +758,19 @@ async function executeCatalogTool(
     // Completion hooks can throw after the tool terminal outcome. Do not
     // rewrite that recorded outcome as a second, contradictory tool failure.
     if (!terminalObserved) {
-      input.attemptParams?.observeToolTerminal?.({
+      const terminalResolution = input.attemptParams?.observeToolTerminal?.({
         toolCallId: params.toolCallId,
         toolName: params.toolName,
         arguments: preparedArgs,
         executionStarted,
+        replaySafe: params.replaySafe,
         outcome: "failure",
         failure: { error: message },
         ...(ownerMutation ? { ownerMutation } : {}),
       });
+      if (terminalResolution) {
+        params.bindEffectReceipt?.(error, terminalResolution.effectReceipt);
+      }
     }
     const failure = sanitizeToolResult({
       content: [{ type: "text", text: message }],

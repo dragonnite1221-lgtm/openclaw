@@ -313,6 +313,8 @@ describe("node_inference agent tool", () => {
     expect(action).toMatchObject({ type: "string", enum: ["discover", "run"] });
     expect(action).not.toHaveProperty("anyOf");
     expect(action).not.toHaveProperty("oneOf");
+    expect(tool.classifyEffect?.({ action: "discover" })).toBe("read");
+    expect(tool.classifyEffect?.({ action: "run" })).toBe("mutation");
   });
 
   it("discovers models through the connected node runtime", async () => {

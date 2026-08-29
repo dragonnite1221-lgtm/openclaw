@@ -47,6 +47,29 @@ type BrowserTabIdentity = { targetId: string; profile: string } & (
   | { target: "node"; node: string }
 );
 
+const BROWSER_READ_ACTIONS = new Set([
+  "doctor",
+  "status",
+  "profiles",
+  "tabs",
+  "snapshot",
+  "screenshot",
+  "console",
+  "text",
+]);
+
+function classifyBrowserEffect(input: unknown): "read" | "mutation" | "unknown" {
+  const params = asNullableRecord(input) ?? {};
+  const action = typeof params.action === "string" ? params.action : "";
+  if (BROWSER_READ_ACTIONS.has(action)) {
+    return "read";
+  }
+  if (action === "requests" || action === "errors") {
+    return params.clear === true ? "mutation" : "read";
+  }
+  return action ? "mutation" : "unknown";
+}
+
 function isBrowserRouteIdentifier(value: unknown, maxChars: number): value is string {
   return (
     typeof value === "string" &&
@@ -230,6 +253,55 @@ export function createBrowserTool(
   const targetDefault = opts?.sandboxBridgeUrl ? "sandbox" : "host";
   const hostHint =
     opts?.allowHostControl === false ? "Host target blocked by policy." : "Host target allowed.";
+  const assertPreDispatchInput = (rawArgs: unknown): void => {
+    const rawParams = asNullableRecord(rawArgs) ?? {};
+    const params = bindingResult?.ok
+      ? applyBrowserTabToolBinding(rawParams, bindingResult.binding)
+      : rawParams;
+    const action = readStringParam(params, "action", { required: true });
+    if (!capabilities.actions.some((candidate) => candidate === action)) {
+      throw new Error(
+        `browser action ${JSON.stringify(action)} is unavailable for this run; use an available action such as snapshot, or select a managed browser profile in an unbound run.`,
+      );
+    }
+    const requestedNode = readStringParam(params, "node");
+    // SAFETY: createBrowserToolSchema restricts target to this closed enum before finalization.
+    const target = readStringParam(params, "target") as "sandbox" | "host" | "node" | undefined;
+    if (requestedNode && target && target !== "node") {
+      throw new Error('node is only supported with target="node".');
+    }
+    if (
+      action === "importprofile" &&
+      (target === "sandbox" || target === "node" || requestedNode)
+    ) {
+      throw new Error(
+        'system profile import must run on the host; omit target or use target="host".',
+      );
+    }
+    const runtimeConfig = getRuntimeConfig();
+    const resolvedBrowser = resolveBrowserConfig(runtimeConfig.browser, runtimeConfig);
+    const requestedProfile = readStringParam(params, "profile");
+    const resolvedProfile = resolveProfile(
+      resolvedBrowser,
+      requestedProfile ?? resolvedBrowser.defaultProfile,
+    );
+    const isUserBrowserProfile =
+      resolvedProfile !== null && getBrowserProfileCapabilities(resolvedProfile).usesChromeMcp;
+    if (isUserBrowserProfile && target === "sandbox") {
+      throw new Error(
+        `profile="${requestedProfile ?? resolvedBrowser.defaultProfile}" cannot use the sandbox browser; use target="host" or omit target.`,
+      );
+    }
+    if (
+      isUserBrowserProfile &&
+      target === "host" &&
+      ["requests", "errors", "text", "emulate"].includes(action)
+    ) {
+      throw new Error(
+        `action=${action} is not supported for existing-session profiles; use action=snapshot to inspect this page, or select a managed browser profile for ${action}.`,
+      );
+    }
+  };
   return {
     label: "Browser",
     name: "browser",
@@ -237,6 +309,11 @@ export function createBrowserTool(
     description: describeBrowserTool({ targetDefault, hostHint, capabilities }),
     parameters: createBrowserToolSchema(capabilities),
     outputSchema: BrowserToolOutputSchema,
+    classifyEffect: classifyBrowserEffect,
+    finalizeBeforeToolCallParams(rawArgs) {
+      assertPreDispatchInput(rawArgs);
+      return rawArgs;
+    },
     execute: async (_toolCallId, args, signal) => {
       const params = bindingResult?.ok
         ? applyBrowserTabToolBinding(args as Record<string, unknown>, bindingResult.binding)

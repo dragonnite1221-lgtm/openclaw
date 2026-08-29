@@ -4936,6 +4936,27 @@ describe("browser observation actions and tab previews", () => {
     },
   );
 
+  it("rejects explicit unsupported existing-session actions before dispatch", () => {
+    setResolvedBrowserProfiles({ user: { driver: "existing-session", attachOnly: true } });
+    const tool = createBrowserTool();
+
+    expect(() =>
+      tool.finalizeBeforeToolCallParams?.(
+        { action: "requests", target: "host", profile: "user" },
+        undefined,
+      ),
+    ).toThrow(/existing-session.*snapshot.*managed/);
+    expect(gatewayMocks.callGatewayTool).not.toHaveBeenCalled();
+  });
+
+  it("classifies browser reads, destructive clears, and navigation", () => {
+    const classify = createBrowserTool().classifyEffect;
+    expect(classify?.({ action: "snapshot" })).toBe("read");
+    expect(classify?.({ action: "requests" })).toBe("read");
+    expect(classify?.({ action: "requests", clear: true })).toBe("mutation");
+    expect(classify?.({ action: "navigate" })).toBe("mutation");
+  });
+
   it("validates all emulation settings before applying anything", async () => {
     const tool = createBrowserTool();
     await expect(tool.execute("empty", { action: "emulate" })).rejects.toThrow("at least one");

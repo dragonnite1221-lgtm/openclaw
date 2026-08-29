@@ -306,15 +306,6 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
             description: "Human-readable label; null clears it",
           }),
         ),
-        owner: Type.Optional(
-          Type.Object(
-            {
-              agentId: Type.Optional(Type.String()),
-              sessionKey: Type.Optional(Type.String()),
-            },
-            { additionalProperties: false },
-          ),
-        ),
         schedule: createCronScheduleSchema({ triggersEnabled }),
         pacing: createCronPacingSchema(),
         ...(triggersEnabled ? { trigger: createCronTriggerSchema() } : {}),
@@ -344,7 +335,7 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
       {
         additionalProperties: true,
         description:
-          'Job fields. action="add": full job. action="update": partial patch — only supplied fields change; null clears.',
+          'Job fields. action="add": full job; declarationKey is add-only. action="update": partial patch — only supplied mutable fields change; null clears. Ownership is stamped from the authenticated caller and is never model-supplied.',
       },
     ),
   );

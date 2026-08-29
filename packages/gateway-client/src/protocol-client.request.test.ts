@@ -291,14 +291,23 @@ describe("GatewayProtocolClient requests", () => {
     respond(
       connection,
       frame.id,
-      { code: "FORBIDDEN", message: "subscription rejected", retryable: false },
+      {
+        code: "FORBIDDEN",
+        message: "subscription rejected",
+        requestEffect: "not_started",
+        retryable: false,
+      },
       false,
     );
 
     const error = await request.catch((value: unknown) => value);
     expect(error).toBeInstanceOf(GatewayProtocolRequestError);
     expect(error).not.toBeInstanceOf(GatewayProtocolRequestTimeoutError);
-    expect(error).toMatchObject({ code: "FORBIDDEN", retryable: false });
+    expect(error).toMatchObject({
+      code: "FORBIDDEN",
+      requestEffect: "not_started",
+      retryable: false,
+    });
     client.stop();
   });
 

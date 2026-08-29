@@ -581,7 +581,12 @@ function expectCronUpdateDeliveryPatch(
 
 function expectResponseError(
   respond: ReturnType<typeof vi.fn>,
-  expected: { code?: string; messageIncludes?: string; details?: Record<string, unknown> },
+  expected: {
+    code?: string;
+    messageIncludes?: string;
+    details?: Record<string, unknown>;
+    requestEffect?: string;
+  },
 ) {
   const call = respond.mock.calls.at(0);
   if (!call) {
@@ -598,6 +603,9 @@ function expectResponseError(
   }
   if (expected.details) {
     expect(error.details).toEqual(expected.details);
+  }
+  if (expected.requestEffect) {
+    expect(error.requestEffect).toBe(expected.requestEffect);
   }
 }
 
@@ -651,7 +659,11 @@ describe("cron method validation", () => {
     expectResponseError(respond, {
       code: "INVALID_REQUEST",
       messageIncludes: "Automation not found: missing-id",
-      details: { code: "CRON_JOB_NOT_FOUND", jobId: "missing-id" },
+      details: {
+        code: "CRON_JOB_NOT_FOUND",
+        jobId: "missing-id",
+      },
+      requestEffect: "failed_no_effect",
     });
   });
 
@@ -766,7 +778,11 @@ describe("cron method validation", () => {
     expectResponseError(respond, {
       code: "INVALID_REQUEST",
       messageIncludes: "cron job not found: cron-42",
-      details: { code: "CRON_JOB_NOT_FOUND", jobId: "cron-42" },
+      details: {
+        code: "CRON_JOB_NOT_FOUND",
+        jobId: "cron-42",
+      },
+      requestEffect: "failed_no_effect",
     });
   });
 
@@ -3903,6 +3919,7 @@ describe("cron method validation", () => {
     );
 
     expectInvalidCronPatternError(respond);
+    expect(requireRecord(respond.mock.calls[0]?.[2], "response error").details).toBeUndefined();
   });
 
   it("returns INVALID_REQUEST when cron.add rejects an incompatible main agent", async () => {
@@ -4022,7 +4039,11 @@ describe("cron method validation", () => {
     expectResponseError(respond, {
       code: "INVALID_REQUEST",
       messageIncludes: "Automation not found: missing",
-      details: { code: "CRON_JOB_NOT_FOUND", jobId: "missing" },
+      details: {
+        code: "CRON_JOB_NOT_FOUND",
+        jobId: "missing",
+      },
+      requestEffect: "failed_no_effect",
     });
   });
 
@@ -4038,7 +4059,9 @@ describe("cron method validation", () => {
       code: "INVALID_REQUEST",
       messageIncludes: "invalid cron.run params",
     });
-    expect(requireRecord(respond.mock.calls[0]?.[2], "response error").details).toBeUndefined();
+    expect(requireRecord(respond.mock.calls[0]?.[2], "response error").requestEffect).toBe(
+      "not_started",
+    );
   });
 
   it("allows caller-scoped cron.run for the same agent", async () => {
@@ -4196,7 +4219,11 @@ describe("cron method validation", () => {
     expectResponseError(respond, {
       code: "INVALID_REQUEST",
       messageIncludes: "Automation not found: missing-cron",
-      details: { code: "CRON_JOB_NOT_FOUND", jobId: "missing-cron" },
+      details: {
+        code: "CRON_JOB_NOT_FOUND",
+        jobId: "missing-cron",
+      },
+      requestEffect: "failed_no_effect",
     });
   });
 

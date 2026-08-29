@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { GatewayClientRequestError } from "../../gateway/client.js";
 import { parseConfigPathArrayIndex } from "../../shared/path-array-index.js";
 import { stringEnum } from "../schema/typebox.js";
+import { createActionEffectClassifier } from "../tool-effect-receipt.js";
 import {
   type AnyAgentTool,
   jsonResult,
@@ -115,6 +116,13 @@ export function createGatewayTool(): AnyAgentTool {
     name: "gateway",
     description: "Read gateway config + schema. Writes/restart unavailable; ask human.",
     parameters: GatewayToolSchema,
+    classifyEffect: createActionEffectClassifier(
+      {
+        "config.get": "read",
+        "config.schema.lookup": "read",
+      },
+      "unknown",
+    ),
     execute: async (_toolCallId, args, signal) => {
       const params = args as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });

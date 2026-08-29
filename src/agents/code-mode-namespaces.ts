@@ -654,7 +654,11 @@ export function createCodeModeNamespaceRuntime(
         throw error;
       }
       if (target.local) {
-        return registerToolEffectReceipt(toCodeModeJsonSafe(input), { state: "read_completed" });
+        try {
+          return registerToolEffectReceipt(toCodeModeJsonSafe(input), { state: "read_completed" });
+        } catch (error) {
+          throw registerToolEffectReceipt(error, { state: "failed_no_effect" });
+        }
       }
       if (!target.catalogId) {
         throw new Error(`Code mode namespace path has no catalog tool: ${path.join(".")}`);

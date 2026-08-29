@@ -24,6 +24,7 @@ import type {
 import type { AgentInternalEvent } from "./internal-events.js";
 import type { AgentMessage } from "./runtime/index.js";
 import type { AgentSession } from "./sessions/index.js";
+import type { ToolEffectClassifier } from "./tool-effect-receipt.js";
 export type { BlockReplyChunking } from "./embedded-agent-subscribe.shared-types.js";
 
 type ReasoningStreamPayload = Pick<
@@ -138,6 +139,8 @@ export type SubscribeEmbeddedAgentSessionParams = {
   codeModeExecToolNames?: ReadonlySet<string>;
   /** Canonical owner keys for unique plugin tools that can change durable state. */
   sideEffectToolOwners?: ReadonlyMap<string, string>;
+  /** Input-aware effect classifiers for uniquely owned concrete tool names. */
+  toolEffectClassifiers?: ReadonlyMap<string, ToolEffectClassifier>;
   /**
    * Exact raw names allowed to emit local media paths for this run.
    * Includes core trusted tools plus bundled plugin tools proven from the

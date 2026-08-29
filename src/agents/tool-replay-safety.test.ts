@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectReplaySafeToolNames,
   collectSideEffectToolOwners,
+  collectToolEffectClassifiers,
   isAgentToolReplaySafe,
   isAgentToolRestartSafe,
 } from "./tool-replay-safety.js";
@@ -86,5 +87,15 @@ describe("agent tool replay safety", () => {
           tool === memoryStore ? '["memory-lancedb","memory_store"]' : undefined,
       }),
     ).toEqual(new Map([["memory_store", '["memory-lancedb","memory_store"]']]));
+  });
+
+  it("retains input-aware classifiers only for uniquely owned tool names", () => {
+    const classifyEffect = () => "read" as const;
+    const owned = { name: "mixed_tool", classifyEffect };
+
+    expect(collectToolEffectClassifiers([owned])).toEqual(
+      new Map([["mixed_tool", classifyEffect]]),
+    );
+    expect(collectToolEffectClassifiers([owned, { name: "mixed_tool" }])).toEqual(new Map());
   });
 });

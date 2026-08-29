@@ -48,6 +48,11 @@ public enum ProgressCardStepStatus: String, Codable, Sendable {
     case completed = "completed"
 }
 
+public enum GatewayRequestEffect: String, Codable, Sendable {
+    case notStarted = "not_started"
+    case failedNoEffect = "failed_no_effect"
+}
+
 public enum EnvironmentStatus: String, Codable, Sendable {
     case available = "available"
     case unavailable = "unavailable"
@@ -1684,6 +1689,7 @@ public struct ErrorShape: Codable, Sendable {
     public let code: String
     public let message: String
     public let details: AnyCodable?
+    public let requesteffect: GatewayRequestEffect?
     public let retryable: Bool?
     public let retryafterms: Int?
 
@@ -1691,12 +1697,14 @@ public struct ErrorShape: Codable, Sendable {
         code: String,
         message: String,
         details: AnyCodable? = nil,
+        requesteffect: GatewayRequestEffect? = nil,
         retryable: Bool? = nil,
         retryafterms: Int? = nil)
     {
         self.code = code
         self.message = message
         self.details = details
+        self.requesteffect = requesteffect
         self.retryable = retryable
         self.retryafterms = retryafterms
     }
@@ -1705,6 +1713,7 @@ public struct ErrorShape: Codable, Sendable {
         case code
         case message
         case details
+        case requesteffect = "requestEffect"
         case retryable
         case retryafterms = "retryAfterMs"
     }

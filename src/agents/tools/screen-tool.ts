@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Type } from "typebox";
 import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { UiCommand, UiCommandParams } from "../../../packages/gateway-protocol/src/index.js";
@@ -105,6 +106,10 @@ export function createScreenTool(opts: ScreenToolOptions = {}): AnyAgentTool {
       "Drive operator web UI: split_right/split_down, close_pane, focus, navigate, panel toggles terminal_show/terminal_hide, browser_show/browser_hide, sidebar_show/sidebar_hide. Optional sessionKey targets another session. Needs connected web client.",
     parameters: ScreenToolSchema,
     outputSchema: UiCommandResultSchema,
+    classifyEffect(input) {
+      const action = isRecord(input) ? input.action : undefined;
+      return ACTIONS.some((candidate) => candidate === action) ? "mutation" : "unknown";
+    },
     requiredClientCaps: [GATEWAY_CLIENT_CAPS.UI_COMMANDS],
     execute: async (_toolCallId, rawArgs) => {
       const params = rawArgs as Record<string, unknown>;

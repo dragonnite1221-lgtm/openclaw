@@ -32,6 +32,7 @@ import {
   resolveSandboxedBridgeMediaPath,
   type SandboxedBridgeMediaPathConfig,
 } from "../sandbox-media-paths.js";
+import { createActionEffectClassifier } from "../tool-effect-receipt.js";
 import {
   ToolInputError,
   readPositiveIntegerParam,
@@ -460,6 +461,12 @@ export function resolveGenerateAction(
       throw new ToolInputError('action must be "generate", "status", or "list"');
   }
 }
+
+export const MEDIA_GENERATE_ACTIONS = ["generate", "status", "list"] as const;
+export const classifyMediaGenerateEffect = createActionEffectClassifier(
+  { generate: "mutation", status: "read", list: "read" },
+  "mutation",
+);
 
 /**
  * Normalizes singular/plural media reference parameters into a deduped, bounded list.

@@ -6,6 +6,7 @@ import type { HookContext } from "./agent-tools.before-tool-call.js";
 import type { CodeModeSkill } from "./code-mode-skills.js";
 import type { AgentToolResult, AgentToolUpdateCallback } from "./runtime/index.js";
 import type { ToolDefinition } from "./sessions/index.js";
+import type { ToolEffectReceipt } from "./tool-effect-receipt.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
 export const TOOL_SEARCH_CODE_MODE_TOOL_NAME = "tool_search_code";
@@ -70,6 +71,8 @@ export type ToolSearchCatalogToolExecutor = (params: {
   acceptResultBeforeProjection: (
     result: AgentToolResult<unknown>,
   ) => Promise<AgentToolResult<unknown>>;
+  /** Rebinds the host observer's private receipt to a harness-owned result or error. */
+  bindEffectReceipt?: (target: unknown, receipt: ToolEffectReceipt) => void;
 }) => Promise<AgentToolResult<unknown>>;
 
 /** Resolved Tool Search config after defaults, limits, and runtime support checks. */

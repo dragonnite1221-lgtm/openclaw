@@ -1,3 +1,4 @@
+import type { ToolEffectClassifier } from "./tool-effect-receipt.js";
 /**
  * Defines the narrow set of tool instances that blind attempt retries may repeat.
  */
@@ -25,7 +26,7 @@ const UNCONDITIONALLY_REPLAY_SAFE_TOOL_NAMES = new Set([
   "view_image",
 ]);
 
-type NamedTool = { name?: string };
+type NamedTool = { name?: string; classifyEffect?: ToolEffectClassifier };
 
 function groupUniqueToolsByName(tools: NamedTool[]): Map<string, NamedTool | undefined> {
   const toolsByName = new Map<string, NamedTool | undefined>();
@@ -99,4 +100,18 @@ export function collectSideEffectToolOwners(
     }
   }
   return owners;
+}
+
+/** Bind input-aware effect classification only when one concrete tool owns the name. */
+export function collectToolEffectClassifiers(
+  tools: NamedTool[],
+): Map<string, ToolEffectClassifier> {
+  const classifiers = new Map<string, ToolEffectClassifier>();
+  for (const [name, tool] of groupUniqueToolsByName(tools)) {
+    const classifier = tool?.classifyEffect;
+    if (classifier) {
+      classifiers.set(name, classifier);
+    }
+  }
+  return classifiers;
 }

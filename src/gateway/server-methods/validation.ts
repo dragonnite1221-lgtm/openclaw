@@ -4,6 +4,7 @@ import {
   ErrorCodes,
   errorShape,
   formatValidationErrors,
+  withGatewayRequestNotStarted,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type {
   ErrorShape,
@@ -26,9 +27,11 @@ export function validateGatewayMethodParams<T>(
   if (validate(params)) {
     return undefined;
   }
-  return errorShape(
-    ErrorCodes.INVALID_REQUEST,
-    `invalid ${method} params: ${formatValidationErrors(validate.errors)}`,
+  return withGatewayRequestNotStarted(
+    errorShape(
+      ErrorCodes.INVALID_REQUEST,
+      `invalid ${method} params: ${formatValidationErrors(validate.errors)}`,
+    ),
   );
 }
 

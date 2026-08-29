@@ -358,7 +358,7 @@ function isPendingBridgeRequestReplaySafe(
     return false;
   }
   const binding = catalogProjection.byCallableName.get(callableName);
-  return binding ? runtime.isReplaySafeExactId(binding.id) : false;
+  return binding ? runtime.isReplaySafeExactId(binding.id, request.args[1] ?? {}) : false;
 }
 
 export function createPendingBridgeStates(params: {

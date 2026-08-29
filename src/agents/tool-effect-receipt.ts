@@ -1,7 +1,27 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+
 /** Host-owned effect provenance for one completed tool lifecycle. */
 export type ToolEffectReceipt = Readonly<{
   state: "not_started" | "read_completed" | "failed_no_effect" | "mutation_committed" | "uncertain";
 }>;
+
+/** Input-aware effect class declared by the concrete tool instance that owns the operation. */
+export type ToolEffectClass = "read" | "mutation" | "unknown";
+export type ToolEffectClassifier = (params: unknown) => ToolEffectClass;
+
+/** Builds one owner classifier from the same closed action table used by its schema/handler. */
+export function createActionEffectClassifier(
+  effects: Readonly<Record<string, ToolEffectClass>>,
+  defaultEffect: ToolEffectClass = "unknown",
+): ToolEffectClassifier {
+  return (params) => {
+    if (!isRecord(params)) {
+      return defaultEffect;
+    }
+    const action = params.action;
+    return typeof action === "string" ? (effects[action] ?? "unknown") : defaultEffect;
+  };
+}
 
 const toolEffectReceipts = new WeakMap<object, ToolEffectReceipt>();
 
@@ -46,12 +66,26 @@ export function transferToolEffectReceipt(source: unknown, target: unknown): voi
 
 /** Consume provenance once so copied or replayed values cannot inherit authority. */
 export function consumeToolEffectReceipt(target: unknown): ToolEffectReceipt | undefined {
-  if ((typeof target !== "object" || target === null) && typeof target !== "function") {
-    return undefined;
+  let current = target;
+  const seen = new Set<unknown>();
+  while (
+    ((typeof current === "object" && current !== null) || typeof current === "function") &&
+    !seen.has(current) &&
+    seen.size < 8
+  ) {
+    seen.add(current);
+    const receipt = toolEffectReceipts.get(current);
+    toolEffectReceipts.delete(current);
+    if (receipt) {
+      return receipt;
+    }
+    try {
+      current = current instanceof Error ? current.cause : undefined;
+    } catch {
+      return undefined;
+    }
   }
-  const receipt = toolEffectReceipts.get(target);
-  toolEffectReceipts.delete(target);
-  return receipt;
+  return undefined;
 }
 
 /** Return whether one recorded operation state proves that no mutation could have occurred. */

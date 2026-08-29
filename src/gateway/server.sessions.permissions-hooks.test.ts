@@ -191,6 +191,7 @@ test("webchat session mutations follow operator scope policy", async () => {
     expect(result.error, mutation.method).toEqual({
       code: "FORBIDDEN",
       message: `missing scope: ${mutation.missingScope}`,
+      requestEffect: "not_started",
       details: {
         code: "MISSING_SCOPE",
         missingScope: mutation.missingScope,

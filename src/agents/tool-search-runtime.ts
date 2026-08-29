@@ -16,7 +16,7 @@ import {
 import { runWithToolExecutionValidation } from "./agent-tools.execution-validation.js";
 import { getChannelAgentToolMeta } from "./channel-tool-metadata.js";
 import type { AgentToolResult } from "./runtime/index.js";
-import { transferToolEffectReceipt } from "./tool-effect-receipt.js";
+import { registerToolEffectReceipt, transferToolEffectReceipt } from "./tool-effect-receipt.js";
 import { isAgentToolReplaySafe } from "./tool-replay-safety.js";
 import {
   isTrustedToolExecutionPreflightError,
@@ -570,7 +570,7 @@ export class ToolSearchRuntime {
     return this.terminalTargetBatchByParent.delete(parent) && terminal;
   }
 
-  isReplaySafeExactId = (id: string): boolean => {
+  isReplaySafeExactId = (id: string, input?: unknown): boolean => {
     let entry: ToolSearchCatalogEntry;
     try {
       entry = findEntryByExactId(resolveCatalog(this.ctx), id);
@@ -581,13 +581,22 @@ export class ToolSearchRuntime {
       return false;
     }
     const pluginMeta = getPluginToolMeta(entry.tool as Parameters<typeof getPluginToolMeta>[0]);
-    if (pluginMeta) {
-      return pluginMeta.mcp
-        ? false
-        : pluginMeta.replaySafe === true && pluginMeta.sideEffecting !== true;
+    if (pluginMeta?.mcp) {
+      return false;
     }
     if (getChannelAgentToolMeta(entry.tool as never)) {
       return false;
+    }
+    const classifier = "classifyEffect" in entry.tool ? entry.tool.classifyEffect : undefined;
+    if (typeof classifier === "function") {
+      try {
+        return classifier(input ?? {}) === "read";
+      } catch {
+        return false;
+      }
+    }
+    if (pluginMeta) {
+      return pluginMeta.replaySafe === true && pluginMeta.sideEffecting !== true;
     }
     return isAgentToolReplaySafe(entry.tool);
   };
@@ -629,7 +638,14 @@ export class ToolSearchRuntime {
       const snapshot = snapshotToolSearchTargetTranscriptResult(candidate);
       // Projection changes object identity; move the private terminal receipt with it.
       transferToolEffectReceipt(candidate, snapshot);
-      await assertCatalogOutputMatchesSchema(entry, snapshot);
+      try {
+        await assertCatalogOutputMatchesSchema(entry, snapshot);
+      } catch (error) {
+        // Schema projection can fail after the owner has already settled. Keep
+        // its exact effect fact on the replacement error instead of guessing.
+        transferToolEffectReceipt(snapshot, error);
+        throw error;
+      }
       return snapshot;
     };
     const validateInput = this.options.validateInput && entry.source === "openclaw";
@@ -653,11 +669,14 @@ export class ToolSearchRuntime {
           sourceName: entry.sourceName,
           toolCallId,
           parentToolCallId: options?.parentToolCallId,
-          replaySafe: this.isReplaySafeExactId(entry.id),
+          replaySafe: this.isReplaySafeExactId(entry.id, normalizedInput),
           input: normalizedInput,
           signal,
           onUpdate: options?.onUpdate,
           acceptResultBeforeProjection,
+          bindEffectReceipt: (target, receipt) => {
+            registerToolEffectReceipt(target, receipt);
+          },
         });
         if (networkInvocation && !preExecutionBlocked) {
           networkInvocation.observed = true;

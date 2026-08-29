@@ -5,12 +5,16 @@ export * from "./system-agent-error-details.js";
 export {
   ErrorCodes,
   GatewayErrorDetailCodes,
+  GatewayRequestEffects,
   buildSkillProposalRevisionChangedErrorDetails,
   isMcpAppViewExpiredError,
   readCronJobNotFoundError,
   readMissingScopeError,
   readMissingScopeErrorDetails,
+  readGatewayRequestEffect,
   readSkillProposalRevisionChangedError,
+  withGatewayRequestFailedNoEffect,
+  withGatewayRequestNotStarted,
 } from "./gateway-error-details.js";
 export type {
   CronJobNotFoundErrorDetails,
@@ -24,6 +28,7 @@ export type {
   ProjectCloneFailureCause,
   WizardNotFoundErrorDetails,
   SetupAdmissionBusyErrorDetails,
+  GatewayRequestEffect,
 } from "./gateway-error-details.js";
 export {
   CronJobNotFoundErrorDetailsSchema,

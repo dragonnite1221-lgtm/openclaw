@@ -5,6 +5,7 @@ import type {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { WRITE_SCOPE } from "../../gateway/operator-scopes.js";
 import type { AgentToolResult } from "../runtime/index.js";
+import { createActionEffectClassifier } from "../tool-effect-receipt.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   jsonResult,
@@ -60,6 +61,11 @@ export function createPortalTool(options: PortalToolOptions = {}): AnyAgentTool 
     description: PORTAL_TOOL_DESCRIPTION,
     parameters: PortalToolSchema,
     outputSchema: PortalOutputSchema,
+    classifyEffect: createActionEffectClassifier({
+      close: "mutation",
+      list: "read",
+      open: "mutation",
+    }),
     execute: async (_toolCallId, rawArgs) => {
       const params = rawArgs as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });

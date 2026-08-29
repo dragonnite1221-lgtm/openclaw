@@ -44,6 +44,7 @@ import {
 import type { AgentMessage } from "../../runtime/index.js";
 import { getInternalToolExecutionPreparer } from "../../runtime/internal-hooks.js";
 import type { AgentSession } from "../../sessions/index.js";
+import type { ToolEffectClassifier } from "../../tool-effect-receipt.js";
 import { isToolResultError } from "../../tool-result-error.js";
 import type { ToolSearchCatalogToolExecutor } from "../../tool-search.js";
 import { redactTranscriptMessage } from "../../transcript-redact.js";
@@ -112,6 +113,7 @@ export function prepareEmbeddedAttemptStream(input: {
   replaySafeToolNames: ReadonlySet<string>;
   codeModeExecToolNames?: ReadonlySet<string>;
   sideEffectToolOwners?: ReadonlyMap<string, string>;
+  toolEffectClassifiers?: ReadonlyMap<string, ToolEffectClassifier>;
   diagnosticOwner: DiagnosticEmbeddedRunOwner;
   trajectoryRecorder?: Parameters<
     typeof createEmbeddedAttemptDeferredLifecycleOwner
@@ -354,6 +356,7 @@ export function prepareEmbeddedAttemptStream(input: {
     replaySafeToolNames: input.replaySafeToolNames,
     ...(input.codeModeExecToolNames ? { codeModeExecToolNames: input.codeModeExecToolNames } : {}),
     ...(input.sideEffectToolOwners ? { sideEffectToolOwners: input.sideEffectToolOwners } : {}),
+    ...(input.toolEffectClassifiers ? { toolEffectClassifiers: input.toolEffectClassifiers } : {}),
     internalEvents: attempt.internalEvents,
   });
   toolMetasForTerminal = subscription.toolMetas;

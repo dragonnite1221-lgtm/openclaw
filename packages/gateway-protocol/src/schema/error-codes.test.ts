@@ -1,6 +1,12 @@
 import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 import {
+  GatewayRequestEffects,
+  readGatewayRequestEffect,
+  withGatewayRequestFailedNoEffect,
+  withGatewayRequestNotStarted,
+} from "../gateway-error-details.js";
+import {
   ErrorCodes,
   CronJobNotFoundErrorDetailsSchema,
   GatewayErrorDetailCodes,
@@ -21,6 +27,32 @@ import {
 import { ErrorShapeSchema } from "./frames.js";
 
 describe("gateway error details", () => {
+  it("carries orthogonal no-start proof with method-specific details", () => {
+    const missingJobError = {
+      code: ErrorCodes.INVALID_REQUEST,
+      message: "missing job",
+      details: { code: GatewayErrorDetailCodes.CRON_JOB_NOT_FOUND, jobId: "job-123" },
+    };
+    const error = withGatewayRequestNotStarted(missingJobError);
+
+    expect(error.details).toEqual({
+      code: GatewayErrorDetailCodes.CRON_JOB_NOT_FOUND,
+      jobId: "job-123",
+    });
+    expect(error.requestEffect).toBe(GatewayRequestEffects.NOT_STARTED);
+    expect(Value.Check(ErrorShapeSchema, error)).toBe(true);
+    expect(Value.Check(GatewayErrorDetailsSchema, error.details)).toBe(true);
+    expect(readGatewayRequestEffect(error)).toBe(GatewayRequestEffects.NOT_STARTED);
+
+    const stalePreconditionError = {
+      code: ErrorCodes.INVALID_REQUEST,
+      message: "stale precondition",
+    };
+    const failedNoEffect = withGatewayRequestFailedNoEffect(stalePreconditionError);
+    expect(Value.Check(ErrorShapeSchema, failedNoEffect)).toBe(true);
+    expect(readGatewayRequestEffect(failedNoEffect)).toBe(GatewayRequestEffects.FAILED_NO_EFFECT);
+  });
+
   it("validates and reads cron job lookup misses", () => {
     const details = {
       code: GatewayErrorDetailCodes.CRON_JOB_NOT_FOUND,

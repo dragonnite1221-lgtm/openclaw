@@ -119,18 +119,9 @@ describe("skill_workshop review mode", () => {
       proposalOnly: true,
       proposalMutationBudget,
     });
-    const foregroundTool = createSkillWorkshopTool({
-      workspaceDir,
-      config: { skills: { workshop: { approvalPolicy: "auto" } } },
-    });
-
     expect(
       (tool.parameters as { properties: { action: { enum: string[] } } }).properties.action.enum,
-    ).toEqual(
-      (foregroundTool.parameters as { properties: { action: { enum: string[] } } }).properties
-        .action.enum,
-    );
-    expect(tool.description).toBe(foregroundTool.description);
+    ).toEqual(["create", "revise", "list", "inspect"]);
     await expect(
       tool.execute("call-apply", { action: "apply", proposal_id: "proposal-1" }),
     ).rejects.toThrow("review allows only");
@@ -261,13 +252,7 @@ describe("skill_workshop review mode", () => {
     expect(
       (reviewTool.parameters as { properties: { action: { enum: string[] } } }).properties.action
         .enum,
-    ).toEqual(
-      (
-        createSkillWorkshopTool({ workspaceDir }).parameters as {
-          properties: { action: { enum: string[] } };
-        }
-      ).properties.action.enum,
-    );
+    ).toEqual(["create", "prepare_patch", "patch", "update", "read", "revise", "list", "inspect"]);
 
     await expect(
       reviewTool.execute("patch-without-read", {

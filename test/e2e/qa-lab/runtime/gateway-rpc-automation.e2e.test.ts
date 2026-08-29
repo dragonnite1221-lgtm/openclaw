@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildToolCallEventsWithArgs } from "../../../../extensions/qa-lab/api.js";
 import type {
   TasksCancelResult,
   TasksGetResult,
@@ -144,8 +145,13 @@ describe("Gateway task and automation RPCs", () => {
       deleteTestEnvValue("OPENCLAW_TEST_MINIMAL_GATEWAY");
 
       const taskPrompt = nextId("create-tracked-task");
+      const codeModePrompt = nextId("code-mode-automation-recovery");
+      const codeModeMarker = "CODE_MODE_AUTOMATION_RECOVERED";
       const wakeText = nextId("wake-heartbeat");
       const providerRequests: Array<Record<string, unknown>> = [];
+      let codeModeJobId: string | undefined;
+      let codeModeTurn = 0;
+      let taskResponseStarted = false;
       let releaseTaskResponse: (() => void) | undefined;
       const taskResponseGate = new Promise<void>((resolve) => {
         releaseTaskResponse = resolve;
@@ -166,7 +172,34 @@ describe("Gateway task and automation RPCs", () => {
           >;
           providerRequests.push(body);
           const serialized = JSON.stringify(body);
-          if (providerRequests.length === 1 && serialized.includes(taskPrompt)) {
+          if (serialized.includes(codeModePrompt)) {
+            if (!codeModeJobId) {
+              throw new Error("Code Mode automation job was not initialized");
+            }
+            codeModeTurn += 1;
+            if (codeModeTurn === 1) {
+              writeResponsesEvents(
+                response,
+                buildToolCallEventsWithArgs("exec", {
+                  code: `return await automations({ action: "update", jobId: ${JSON.stringify(codeModeJobId)}, job: { owner: { agentId: "main" }, enabled: false } });`,
+                }),
+              );
+              return;
+            }
+            if (codeModeTurn === 2) {
+              writeResponsesEvents(
+                response,
+                buildToolCallEventsWithArgs("exec", {
+                  code: `return await automations({ action: "update", jobId: ${JSON.stringify(codeModeJobId)}, job: { enabled: false } });`,
+                }),
+              );
+              return;
+            }
+            writeAssistantResponse(response, codeModeMarker);
+            return;
+          }
+          if (!taskResponseStarted && serialized.includes(taskPrompt)) {
+            taskResponseStarted = true;
             await taskResponseGate;
             writeAssistantResponse(response, "Tracked task completed.");
             return;
@@ -219,6 +252,7 @@ describe("Gateway task and automation RPCs", () => {
           },
           gateway: { auth: { mode: "token", token } },
           plugins: { slots: { memory: "none" } },
+          tools: { codeMode: { enabled: true } },
         } satisfies OpenClawConfig;
 
         gateway = await startGatewayWithClient({
@@ -242,6 +276,7 @@ describe("Gateway task and automation RPCs", () => {
           wakeMode: "next-heartbeat",
           payload: { kind: "systemEvent", text: "Future automation evidence" },
         });
+        codeModeJobId = added.id;
         expect(added).toMatchObject({ name: "Gateway automation evidence" });
 
         const read = await client.request<{ id: string; name: string }>("cron.get", {
@@ -249,11 +284,62 @@ describe("Gateway task and automation RPCs", () => {
         });
         expect(read).toMatchObject({ id: added.id, name: "Gateway automation evidence" });
 
+        await expect(
+          client.request("cron.update", {
+            id: added.id,
+            patch: { owner: { agentId: "other-agent" } },
+          }),
+        ).rejects.toMatchObject({
+          gatewayCode: "INVALID_REQUEST",
+          requestEffect: "not_started",
+        });
+        await expect(client.request("cron.get", { id: added.id })).resolves.toMatchObject({
+          id: added.id,
+          name: "Gateway automation evidence",
+          enabled: true,
+        });
+
+        const codeModeSessionKey = `agent:main:${nextId("code-mode-automation")}`;
+        const codeModeRunId = nextId("code-mode-automation-run");
+        const codeModeStarted = await client.request<{ runId: string; status: string }>(
+          "agent",
+          {
+            sessionKey: codeModeSessionKey,
+            message: codeModePrompt,
+            deliver: false,
+            idempotencyKey: codeModeRunId,
+          },
+          { expectFinal: false },
+        );
+        expect(codeModeStarted).toMatchObject({ runId: codeModeRunId, status: "accepted" });
+        const codeModeTerminal = await client.request<Record<string, unknown>>(
+          "agent.wait",
+          { runId: codeModeRunId, timeoutMs: 30_000 },
+          { timeoutMs: 35_000 },
+        );
+        expect(codeModeTerminal, JSON.stringify(codeModeTerminal)).toMatchObject({
+          runId: codeModeRunId,
+          status: "ok",
+        });
+        expect(codeModeTurn).toBe(3);
+        await expect(client.request("cron.get", { id: added.id })).resolves.toMatchObject({
+          id: added.id,
+          name: "Gateway automation evidence",
+          enabled: false,
+        });
+        const codeModeHistory = await client.request<{ messages?: unknown[] }>("chat.history", {
+          sessionKey: codeModeSessionKey,
+          limit: 20,
+        });
+        const codeModeTranscript = JSON.stringify(codeModeHistory.messages ?? []);
+        expect(codeModeTranscript).toContain(codeModeMarker);
+        expect(codeModeTranscript).not.toContain("temporary read-only recovery attempt");
+
         const listed = await client.request<{
           jobs: Array<{ id: string; name: string; enabled: boolean }>;
         }>("cron.list", { includeDisabled: true });
         expect(listed.jobs).toContainEqual(
-          expect.objectContaining({ id: added.id, name: added.name, enabled: true }),
+          expect.objectContaining({ id: added.id, name: added.name, enabled: false }),
         );
 
         const updated = await client.request<{ id: string; name: string; enabled: boolean }>(

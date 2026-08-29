@@ -175,6 +175,7 @@ export async function handleToolExecutionEnd(
     initialCallSummary?.instanceReplaySafe === true,
     initialCallSummary?.ownerKey,
     structuredReplaySafe,
+    ctx.params.toolEffectClassifiers?.get(toolName),
   );
   // A racing observer can consume the active wrapper boundary. Settled and
   // custom producers use their terminal fact, while policy blocks override it.

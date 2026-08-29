@@ -325,7 +325,7 @@
             },
             "job": {
               "additionalProperties": true,
-              "description": "Job fields. action=\"add\": full job. action=\"update\": partial patch — only supplied fields change; null clears.",
+              "description": "Job fields. action=\"add\": full job; declarationKey is add-only. action=\"update\": partial patch — only supplied mutable fields change; null clears. Ownership is stamped from the authenticated caller and is never model-supplied.",
               "properties": {
                 "declarationKey": {
                   "description": "Idempotent declaration key (add only).",
@@ -543,18 +543,6 @@
                 "name": {
                   "description": "Job name",
                   "type": "string"
-                },
-                "owner": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "agentId": {
-                      "type": "string"
-                    },
-                    "sessionKey": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
                 },
                 "pacing": {
                   "anyOf": [

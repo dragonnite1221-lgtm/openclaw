@@ -12,6 +12,7 @@ import type {
 import { mulawToPcm } from "openclaw/plugin-sdk/realtime-voice";
 import { detectBinary } from "openclaw/plugin-sdk/setup-tools";
 import { resolveOAuthDir } from "openclaw/plugin-sdk/state-paths";
+import { asNullableRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
@@ -214,8 +215,15 @@ function createWhatsAppCallToolWithDependencies(
     description:
       "Call the current WhatsApp requester and play a synthesized spoken message. This tool cannot call arbitrary phone numbers.",
     parameters: WhatsAppCallToolSchema,
+    classifyEffect(input) {
+      const action = asNullableRecord(input)?.action;
+      return action === "status" ? "read" : action === "call" ? "mutation" : "unknown";
+    },
     async execute(_toolCallId, rawParams, signal) {
       const params = rawParams as WhatsAppCallToolParams;
+      if (params.action !== "status" && params.action !== "call") {
+        throw new Error('action must be "status" or "call"');
+      }
       const binaryFound = await dependencies.detectMeowCaller();
       const sessionStoreFound = await isRegularFile(sessionStorePath);
       if (params.action === "status") {

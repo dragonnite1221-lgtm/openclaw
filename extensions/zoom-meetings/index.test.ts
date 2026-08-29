@@ -160,6 +160,12 @@ describe("Zoom meetings plugin surface", () => {
       ].toSorted(),
     );
     expect(tools.map((tool) => tool.name)).toEqual(["zoom_meetings"]);
+    const classifyEffect = tools[0]?.classifyEffect as
+      | ((input: unknown) => "read" | "mutation" | "unknown")
+      | undefined;
+    expect(classifyEffect?.({ action: "status" })).toBe("read");
+    expect(classifyEffect?.({ action: "transcript" })).toBe("read");
+    expect(classifyEffect?.({ action: "join" })).toBe("mutation");
     expect(cli).toEqual([expect.objectContaining({ commands: ["zoommeetings"] })]);
     expect(cli[0]?.descriptors?.[0]).toBe(ZOOM_MEETINGS_CLI_METADATA.descriptor);
     expect(nodeCommands).toEqual([

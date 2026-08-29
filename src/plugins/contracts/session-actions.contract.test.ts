@@ -583,6 +583,7 @@ describe("plugin session actions", () => {
             error: {
               code: "FORBIDDEN",
               message: `missing scope: ${missingScope}`,
+              requestEffect: "not_started",
               details: {
                 code: "MISSING_SCOPE",
                 missingScope,

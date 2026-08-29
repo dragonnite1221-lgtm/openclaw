@@ -61,6 +61,7 @@ import {
   readListLimitParam,
   readProposalForInspect,
   readProposalStatusParam,
+  requireProposalContent,
   readSupportFilesParam,
   skillWorkshopAgentEventActor,
 } from "./skill-workshop-tool-helpers.js";
@@ -79,18 +80,13 @@ import {
 } from "./skill-workshop-tool-presentation.js";
 import {
   buildSkillWorkshopToolSchema,
+  classifySkillWorkshopEffect,
   resolveProposalOnlyActions,
   SKILL_PROPOSAL_STATUSES,
   SKILL_WORKSHOP_ACTIONS,
 } from "./skill-workshop-tool-schema.js";
 
 const SKILL_WORKSHOP_MUTATION_ACTIONS = new Set(["create", "patch", "update", "revise"]);
-function requireProposalContent(content: string | undefined): string {
-  if (content === undefined) {
-    throw new ToolInputError("proposal_content required");
-  }
-  return content;
-}
 
 function bindProposalRevisionConstraint(
   params: Record<string, unknown>,
@@ -181,10 +177,14 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
       collectionOnly: options.collectionReconcile !== undefined,
       proposalRevision: options.proposalRevision !== undefined,
     }),
-    parameters: buildSkillWorkshopToolSchema(
-      options.collectionReconcile !== undefined,
-      options.proposalRevision !== undefined,
-    ),
+    parameters: buildSkillWorkshopToolSchema({
+      collectionOnly: options.collectionReconcile !== undefined,
+      proposalOnly: options.proposalOnly === true,
+      proposalRevision: options.proposalRevision !== undefined,
+      supportsCompletion: options.proposalReviewCompletion !== undefined,
+      updateProposals: options.updateProposals === true,
+    }),
+    classifyEffect: classifySkillWorkshopEffect,
     execute: async (_toolCallId, args) => {
       const rawParams = asToolParamsRecord(args);
       const action = readToolStringParam(rawParams, "action", { required: true });

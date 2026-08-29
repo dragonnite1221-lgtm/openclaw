@@ -54,6 +54,13 @@ describe("executeZalouserTool", () => {
     mockListGroups.mockReset();
   });
 
+  it("classifies directory reads separately from outbound sends", () => {
+    const classify = createZalouserTool().classifyEffect;
+    expect(classify?.({ action: "friends" })).toBe("read");
+    expect(classify?.({ action: "status" })).toBe("read");
+    expect(classify?.({ action: "send" })).toBe("mutation");
+  });
+
   it("returns error when send action is missing required fields", async () => {
     const result = await executeZalouserTool("tool-1", { action: "send" });
     expect(extractDetails(result)).toEqual({

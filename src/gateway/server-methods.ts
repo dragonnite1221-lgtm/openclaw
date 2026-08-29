@@ -3,6 +3,7 @@ import {
   ErrorCodes,
   errorShape,
   missingScopeErrorShape,
+  withGatewayRequestNotStarted,
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import {
@@ -697,7 +698,7 @@ export async function handleGatewayRequest(
     methodRegistry,
   });
   if (authorization.error) {
-    respond(false, undefined, authorization.error);
+    respond(false, undefined, withGatewayRequestNotStarted(authorization.error));
     return;
   }
   const handler = methodRegistry.getHandler(req.method) as GatewayRequestHandler | undefined;
@@ -705,7 +706,9 @@ export async function handleGatewayRequest(
     respond(
       false,
       undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, `unknown method: ${req.method}`),
+      withGatewayRequestNotStarted(
+        errorShape(ErrorCodes.INVALID_REQUEST, `unknown method: ${req.method}`),
+      ),
     );
     return;
   }
@@ -730,6 +733,6 @@ export async function handleGatewayRequest(
     isWebchatConnect,
     methodRegistry,
     requestParams: req.params,
-    reject: (error) => respond(false, undefined, error),
+    reject: (error) => respond(false, undefined, withGatewayRequestNotStarted(error)),
   });
 }

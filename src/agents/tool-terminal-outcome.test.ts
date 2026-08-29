@@ -188,6 +188,16 @@ describe("tool terminal outcome observer", () => {
     expect(consumeToolEffectReceipt(result)).toBeUndefined();
   });
 
+  it("retains a host-owned receipt through bounded error wrapping", () => {
+    const ownerError = registerToolEffectReceipt(new Error("owner rejected"), {
+      state: "failed_no_effect",
+    });
+    const wrapped = new Error("adapter wrapped the owner error", { cause: ownerError });
+
+    expect(consumeToolEffectReceipt(wrapped)).toEqual({ state: "failed_no_effect" });
+    expect(consumeToolEffectReceipt(ownerError)).toBeUndefined();
+  });
+
   it("clears a failed sessions_spawn once a retry with adjusted arguments succeeds", () => {
     const observe = createToolTerminalObserver("run-spawn-retry");
     const failedArgs = {

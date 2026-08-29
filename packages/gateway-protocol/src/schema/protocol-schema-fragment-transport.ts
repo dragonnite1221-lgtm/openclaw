@@ -15,6 +15,7 @@ export const TransportProtocolSchemas = {
   PresenceEntry: snapshot.PresenceEntrySchema,
   StateVersion: snapshot.StateVersionSchema,
   Snapshot: snapshot.SnapshotSchema,
+  GatewayRequestEffect: frames.GatewayRequestEffectSchema,
   ErrorShape: frames.ErrorShapeSchema,
   CronJobNotFoundErrorDetails: errorCodes.CronJobNotFoundErrorDetailsSchema,
   MissingScopeErrorDetails: errorCodes.MissingScopeErrorDetailsSchema,

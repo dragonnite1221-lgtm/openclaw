@@ -187,6 +187,8 @@ describe("skill_workshop tool", () => {
   it("describes action selection and pending-proposal discovery in its schema", () => {
     const tool = createSkillWorkshopTool({ workspaceDir: "/tmp/openclaw" });
     const schema = JSON.stringify(tool.parameters);
+    const actionEnum = (tool.parameters as { properties: { action: { enum: string[] } } })
+      .properties.action.enum;
     const lazyDescription = listCoreToolSections()
       .flatMap((section) => section.tools)
       .find((entry) => entry.id === "skill_workshop")?.description;
@@ -206,6 +208,9 @@ describe("skill_workshop tool", () => {
     expect(schema).toContain("max 160 bytes");
     expect(schema).toContain("shortens the proposal listing entry");
     expect(schema).toContain("artifact_path");
+    expect(actionEnum).not.toContain("complete");
+    expect(tool.classifyEffect?.({ action: "inspect" })).toBe("read");
+    expect(tool.classifyEffect?.({ action: "apply" })).toBe("mutation");
     expect(tool.description).toContain(lazyDescription);
     expect(tool.description).toContain(SKILL_AUTHORING_STANDARDS_PROMPT);
   });
@@ -381,23 +386,7 @@ describe("skill_workshop tool", () => {
 
     expect(
       (tool.parameters as { properties: { action: { enum: string[] } } }).properties.action.enum,
-    ).toEqual([
-      "create",
-      "prepare_patch",
-      "patch",
-      "update",
-      "read",
-      "revise",
-      "list",
-      "inspect",
-      "evaluate",
-      "apply",
-      "reject",
-      "quarantine",
-      "history",
-      "restore_collection",
-      "complete",
-    ]);
+    ).toEqual(["create", "revise", "list", "inspect", "complete"]);
     const create = tool.execute("call-create-before-complete", {
       action: "create",
       name: "Checkpointed Learning",

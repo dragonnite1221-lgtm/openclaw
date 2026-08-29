@@ -21,6 +21,7 @@ import type {
   AgentToolResult,
   AgentToolUpdateCallback,
 } from "../runtime/index.js";
+import type { ToolEffectClassifier } from "../tool-effect-receipt.js";
 import { ToolAuthorizationError, ToolInputError } from "../tool-input-error.js";
 import { textResult } from "./tool-results.js";
 
@@ -68,6 +69,8 @@ export type AnyAgentTool = Omit<AgentTool, "execute"> &
       TSchema,
       unknown
     >["finalizeBeforeToolCallParams"];
+    /** Concrete owner classification for the final prepared input; omitted means fail closed. */
+    classifyEffect?: ToolEffectClassifier;
   };
 
 export function asToolParamsRecord(params: unknown): Record<string, unknown> {

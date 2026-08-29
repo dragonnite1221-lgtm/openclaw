@@ -350,6 +350,7 @@ type ToolHandlerParams = Pick<
   | "replaySafeToolNames"
   | "codeModeExecToolNames"
   | "sideEffectToolOwners"
+  | "toolEffectClassifiers"
   | "toolResultFormat"
   | "toolProgressDetail"
   | "sourceReplyDeliveryMode"

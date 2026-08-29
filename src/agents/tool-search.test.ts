@@ -23,6 +23,7 @@ import { resetAdjustedParamsByToolCallIdForTests } from "./agent-tools.before-to
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
 import { filterToolsByPolicy } from "./agent-tools.policy.js";
 import { normalizeAgentRuntimeTools } from "./runtime-plan/tools.js";
+import { consumeToolEffectReceipt } from "./tool-effect-receipt.js";
 import {
   formatToolExecutionErrorMessage,
   resolveToolExecutionErrorKind,
@@ -1450,6 +1451,34 @@ describe("Tool Search", () => {
       "returned details that do not match its declared outputSchema",
     );
     expect(projected).toEqual([]);
+  });
+
+  it("preserves an owner receipt when output projection replaces the terminal error", async () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const target = pluginTool("orchard_receipt_output", "Return a receipt-backed orchard result");
+    target.outputSchema = Type.Object({ id: Type.String() }, { additionalProperties: false });
+    registerHeadlessToolSearchCatalog({ catalogRef, tools: [target] });
+    const runtime = new ToolSearchRuntime(
+      {
+        catalogRef,
+        executeTool: async (params) => {
+          const result = jsonResult({ id: 42 });
+          params.bindEffectReceipt?.(result, { state: "read_completed" });
+          return await params.acceptResultBeforeProjection(result);
+        },
+      },
+      resolveToolSearchConfig({ tools: { toolSearch: { mode: "tools" } } } as never),
+    );
+
+    let projectionError: unknown;
+    try {
+      await runtime.callValue("orchard_receipt_output");
+    } catch (error) {
+      projectionError = error;
+    }
+    expect(projectionError).toBeInstanceOf(Error);
+    expect(consumeToolEffectReceipt(projectionError)).toEqual({ state: "read_completed" });
+    expect(consumeToolEffectReceipt(projectionError)).toBeUndefined();
   });
 
   it("revalidates mutable results after executor-side acceptance", async () => {

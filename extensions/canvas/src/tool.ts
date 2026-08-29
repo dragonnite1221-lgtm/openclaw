@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk/number-runtime";
 import { readFiniteNumberParam, readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
+import { asNullableRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { CANVAS_PRESENT_COMMAND, resolveCanvasNodeFromList } from "./node-eligibility.js";
 import { CanvasToolSchema } from "./tool-schema.js";
 
@@ -38,6 +39,12 @@ export function createCanvasTool(options?: CanvasToolOptions): AnyAgentTool {
     resultContentSource: "network",
     description: "Present, hide, or navigate the widget panel on a paired macOS node.",
     parameters: CanvasToolSchema,
+    classifyEffect(input) {
+      const action = asNullableRecord(input)?.action;
+      return action === "present" || action === "hide" || action === "navigate"
+        ? "mutation"
+        : "unknown";
+    },
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const action = readStringParam(params, "action", { required: true });

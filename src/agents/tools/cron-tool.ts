@@ -25,6 +25,7 @@ import {
   readNonNegativeIntegerParam,
   readPositiveIntegerParam,
   readToolStringParam,
+  ToolInputError,
 } from "./common.js";
 import {
   assertCronToolAgentFieldMatchesScope,
@@ -33,7 +34,9 @@ import {
   resolveCronToolCallerScope,
 } from "./cron-tool-caller-scope.js";
 import {
+  assertCronToolOwnershipInput,
   canonicalizeCronToolObject,
+  classifyCronToolEffect,
   hasCronCreateSignal,
   isEmptyRecoveredCronPatch,
   recoverCronObjectFromFlatParams,
@@ -224,10 +227,20 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
       agentSessionKey: opts?.agentSessionKey,
       triggersEnabled,
     }),
+    classifyEffect: classifyCronToolEffect,
+    finalizeBeforeToolCallParams: (rawParams) => {
+      if (!isRecord(rawParams)) {
+        throw new ToolInputError("automations arguments must be an object");
+      }
+      const action = readToolStringParam(rawParams, "action", { required: true });
+      assertCronToolOwnershipInput(action, rawParams);
+      return rawParams;
+    },
     execute: async (_toolCallId, args, operationSignal) => {
       operationSignal?.throwIfAborted();
       const params = args as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });
+      assertCronToolOwnershipInput(action, params);
       assertCronSelfRemoveScope(opts, action, params);
       const parsedGatewayOpts = readGatewayCallOptions(params);
       const gatewayOpts: GatewayCallOptions = {

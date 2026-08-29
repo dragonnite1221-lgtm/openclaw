@@ -72,7 +72,9 @@ async function callNodesTool(params: {
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
   input: Record<string, unknown>;
+  onDispatch?: () => void;
 }): Promise<unknown> {
+  params.onDispatch?.();
   return await params.runtime.callValue(CODE_MODE_NODES_TOOL_ID, params.input, {
     includeMcp: false,
     parentToolCallId: params.parentToolCallId,
@@ -102,6 +104,7 @@ async function runNodesBridge(params: {
   request: PendingBridgeRequest;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
+  onDispatch?: () => void;
 }): Promise<unknown> {
   const values = params.request.args;
   const action = values[0];
@@ -247,6 +250,7 @@ async function runAgentSpawnBridge(params: {
   ctx: ToolSearchToolContext;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
+  onDispatch?: () => void;
 }) {
   requireCodeModeSwarmEnabled(params.ctx);
   const prompt = params.request.args[0];
@@ -319,6 +323,7 @@ async function runAgentSpawnBridge(params: {
   Object.defineProperty(spawnInput, SWARM_CODE_MODE_REQUEST_FINGERPRINT, {
     value: requestFingerprint,
   });
+  params.onDispatch?.();
   const called = await params.runtime.callExactId(spawnEntry.id, spawnInput, {
     parentToolCallId: params.parentToolCallId,
     signal: params.signal,
@@ -340,6 +345,7 @@ async function runAgentWaitBridge(params: {
   request: PendingBridgeRequest;
   ctx: ToolSearchToolContext;
   signal?: AbortSignal;
+  onDispatch?: () => void;
 }): Promise<CollectorCompletionResult> {
   requireCodeModeSwarmEnabled(params.ctx);
   const runId = params.request.args[0];
@@ -351,6 +357,7 @@ async function runAgentWaitBridge(params: {
     throw new ToolInputError("agents.run wait requires session identity.");
   }
   const requesterSessionKey = resolveCodeModeRequesterSessionKey(params.ctx);
+  params.onDispatch?.();
   return await waitForCollectorCompletion({
     runId: runId.trim(),
     currentSessionKeys: new Set([rawSessionKey, requesterSessionKey]),
@@ -363,6 +370,7 @@ async function runAgentWaitBridge(params: {
 function runSwarmNoteBridge(params: {
   request: PendingBridgeRequest;
   ctx: ToolSearchToolContext;
+  onDispatch?: () => void;
 }): { ok: true } {
   requireCodeModeSwarmEnabled(params.ctx);
   const note = isRecord(params.request.args[0]) ? params.request.args[0] : undefined;
@@ -375,6 +383,7 @@ function runSwarmNoteBridge(params: {
   if (!sessionKey) {
     throw new ToolInputError("swarmNote requires session identity.");
   }
+  params.onDispatch?.();
   emitSessionLifecycleEvent({
     sessionKey,
     reason: "swarm-note",
@@ -404,6 +413,10 @@ export async function runBridgeRequest(params: {
 }): Promise<SettledBridgeRequest> {
   const catalogProjection = params.catalogProjection;
   let effectReceipt: ToolEffectReceipt | undefined;
+  let targetDispatched = false;
+  const markTargetDispatched = () => {
+    targetDispatched = true;
+  };
   try {
     const values = Array.isArray(params.request.args) ? params.request.args : [];
     let value: unknown;
@@ -474,6 +487,7 @@ export async function runBridgeRequest(params: {
             yieldMs: Math.max(1, Math.min(1_000, Math.floor(params.remainingMs / 4))),
           };
         }
+        markTargetDispatched();
         const called = await params.runtime.callExactId(binding.id, input, {
           parentToolCallId: params.parentToolCallId,
           signal: params.signal,
@@ -487,7 +501,7 @@ export async function runBridgeRequest(params: {
         break;
       }
       case "nodes": {
-        value = await runNodesBridge(params);
+        value = await runNodesBridge({ ...params, onDispatch: markTargetDispatched });
         break;
       }
       case "yield": {
@@ -525,6 +539,7 @@ export async function runBridgeRequest(params: {
                 `namespace tool is not visible in the run catalog: ${request.toolName}`,
               );
             }
+            markTargetDispatched();
             const called = await params.runtime.callExactId(entry.id, request.input, {
               parentToolCallId: params.parentToolCallId,
               signal: params.signal,
@@ -549,11 +564,11 @@ export async function runBridgeRequest(params: {
         break;
       }
       case "agentSpawn": {
-        value = await runAgentSpawnBridge(params);
+        value = await runAgentSpawnBridge({ ...params, onDispatch: markTargetDispatched });
         break;
       }
       case "agentWait": {
-        value = await runAgentWaitBridge(params);
+        value = await runAgentWaitBridge({ ...params, onDispatch: markTargetDispatched });
         break;
       }
       case "skillsList": {
@@ -589,7 +604,7 @@ export async function runBridgeRequest(params: {
         break;
       }
       case "swarmNote": {
-        value = runSwarmNoteBridge(params);
+        value = runSwarmNoteBridge({ ...params, onDispatch: markTargetDispatched });
         break;
       }
     }
@@ -618,7 +633,8 @@ export async function runBridgeRequest(params: {
       registerTrustedToolNoStartError(settled);
     }
     effectReceipt =
-      consumeToolEffectReceipt(error) ?? (trustedNoStart ? { state: "not_started" } : undefined);
+      consumeToolEffectReceipt(error) ??
+      (trustedNoStart || !targetDispatched ? { state: "not_started" } : undefined);
     return effectReceipt ? registerToolEffectReceipt(settled, effectReceipt) : settled;
   }
 }

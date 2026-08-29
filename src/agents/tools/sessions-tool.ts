@@ -23,6 +23,7 @@ import { isIncognitoSessionKey, parseAgentSessionKey } from "../../routing/sessi
 import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { stringEnum } from "../schema/typebox.js";
+import { createActionEffectClassifier } from "../tool-effect-receipt.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   jsonResult,
@@ -333,6 +334,16 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
     description:
       "Session settings, ownership, reset, delete, and sidebar categories: patch label/icon/category/status, pin, archive/restore, model/thinking override; category assigns one session while group_set replaces the ordered category catalog; assign_owner hands responsibility to a human or agent; reset/delete visible sessions; group_list/group_set/group_rename/group_delete.",
     parameters: SessionsToolSchema,
+    classifyEffect: createActionEffectClassifier({
+      assign_owner: "mutation",
+      delete: "mutation",
+      group_delete: "mutation",
+      group_list: "read",
+      group_rename: "mutation",
+      group_set: "mutation",
+      patch: "mutation",
+      reset: "mutation",
+    }),
     execute: async (_toolCallId, rawArgs) => {
       const params = rawArgs as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });

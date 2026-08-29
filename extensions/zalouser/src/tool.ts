@@ -3,6 +3,7 @@ import { resolveChannelMediaMaxBytes } from "openclaw/plugin-sdk/account-helpers
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { asNullableRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { jsonResult as json, type AgentToolResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
 import { resolveZalouserAccountSync } from "./accounts.js";
@@ -212,6 +213,13 @@ export function createZalouserTool(context?: ZalouserToolContext): AnyAgentTool 
       "Actions: send (text message), image (send image URL), link (send link), " +
       "friends (list/search friends), groups (list groups), me (profile info), status (auth check).",
     parameters: ZalouserToolSchema,
+    classifyEffect(input) {
+      const action = asNullableRecord(input)?.action;
+      if (action === "friends" || action === "groups" || action === "me" || action === "status") {
+        return "read";
+      }
+      return action === "send" || action === "image" || action === "link" ? "mutation" : "unknown";
+    },
     execute: async (toolCallId, params, signal, onUpdate) =>
       await executeZalouserTool(toolCallId, params as ToolParams, signal, onUpdate, context),
   } satisfies AnyAgentTool;

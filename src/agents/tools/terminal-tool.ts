@@ -16,6 +16,7 @@ import {
   type ExecPolicyOverrides,
   type ExecSessionDefaults,
 } from "../exec-defaults.js";
+import { createActionEffectClassifier } from "../tool-effect-receipt.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   jsonResult,
@@ -27,6 +28,13 @@ import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import { getInProcessGatewayToolContext } from "./in-process-gateway.js";
 
 const ACTIONS = ["read", "list", "resize", "close", "input"] as const;
+const classifyTerminalEffect = createActionEffectClassifier({
+  read: "read",
+  list: "read",
+  resize: "mutation",
+  close: "mutation",
+  input: "mutation",
+});
 const MAX_DIMENSION = 2000;
 
 const TerminalToolSchema = Type.Object(
@@ -110,6 +118,7 @@ export function createTerminalTool(opts: TerminalToolOptions = {}): AnyAgentTool
       "Manage terminals the operator opened from this chat's Control UI panel. list discovers shared terminals; read returns a buffer snapshot; resize and close manage an existing terminal; input requires one-time operator approval unless the execution policy permits unrestricted access.",
     parameters: TerminalToolSchema,
     outputSchema: TerminalToolOutputSchema,
+    classifyEffect: classifyTerminalEffect,
     execute: async (toolCallId, rawArgs, signal) => {
       const params = rawArgs as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });

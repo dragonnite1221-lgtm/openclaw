@@ -2,6 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyAgentRuntimeIdentityToken } from "../../gateway/agent-runtime-identity-token.js";
 import type { CallGatewayOptions } from "../../gateway/call.js";
+import { GatewayClientRequestError } from "../../gateway/client.js";
 import {
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,
@@ -10,6 +11,7 @@ import {
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createOperationalRunInstanceRef } from "../admitted-run-context.js";
+import { consumeToolEffectReceipt } from "../tool-effect-receipt.js";
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import {
   callGatewayTool,
@@ -139,6 +141,36 @@ describe("gateway tool defaults", () => {
     expect(call.token).toBe("t");
     expect(call.timeoutMs).toBe(5000);
     expect(call.scopes).toEqual(["operator.read"]);
+  });
+
+  it.each([
+    ["not_started", "invalid cron.update params"],
+    ["failed_no_effect", "cron job changed before commit"],
+  ] as const)("preserves Gateway %s effect proof", async (state, message) => {
+    const error = new GatewayClientRequestError({
+      code: "INVALID_REQUEST",
+      message,
+      requestEffect: state,
+    });
+    mocks.callGateway.mockRejectedValueOnce(error);
+
+    await expect(callGatewayTool("cron.update", {}, { id: "job-1", patch: {} })).rejects.toBe(
+      error,
+    );
+    expect(consumeToolEffectReceipt(error)).toEqual({ state });
+  });
+
+  it("does not infer no effect from an INVALID_REQUEST code or message", async () => {
+    const error = new GatewayClientRequestError({
+      code: "INVALID_REQUEST",
+      message: "invalid cron.update params",
+    });
+    mocks.callGateway.mockRejectedValueOnce(error);
+
+    await expect(callGatewayTool("cron.update", {}, { id: "job-1", patch: {} })).rejects.toBe(
+      error,
+    );
+    expect(consumeToolEffectReceipt(error)).toBeUndefined();
   });
 
   it("rejects invalid gateway timeoutMs before RPC", async () => {

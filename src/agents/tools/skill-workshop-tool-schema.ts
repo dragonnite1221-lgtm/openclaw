@@ -3,6 +3,7 @@
 import { Type } from "typebox";
 import type { SkillProposalStatus } from "../../skills/workshop/types.js";
 import { stringEnum } from "../schema/typebox.js";
+import { createActionEffectClassifier } from "../tool-effect-receipt.js";
 import {
   SKILL_COLLECTION_ACTION_DESCRIPTION,
   skillCollectionPlanSchema,
@@ -34,6 +35,25 @@ export const SKILL_PROPOSAL_STATUSES = [
   "stale",
 ] as const satisfies readonly SkillProposalStatus[];
 
+export const classifySkillWorkshopEffect = createActionEffectClassifier({
+  apply: "mutation",
+  complete: "mutation",
+  create: "mutation",
+  evaluate: "mutation",
+  history: "read",
+  inspect: "read",
+  list: "read",
+  patch: "mutation",
+  prepare_patch: "mutation",
+  quarantine: "mutation",
+  read: "read",
+  reconcile: "mutation",
+  reject: "mutation",
+  restore_collection: "mutation",
+  revise: "mutation",
+  update: "mutation",
+});
+
 export function resolveProposalOnlyActions(updateProposals: boolean, supportsCompletion: boolean) {
   return [
     "create",
@@ -45,23 +65,31 @@ export function resolveProposalOnlyActions(updateProposals: boolean, supportsCom
   ];
 }
 
-export function buildSkillWorkshopToolSchema(collectionOnly: boolean, proposalRevision = false) {
+export function buildSkillWorkshopToolSchema(options: {
+  collectionOnly: boolean;
+  proposalOnly: boolean;
+  proposalRevision: boolean;
+  supportsCompletion: boolean;
+  updateProposals: boolean;
+}) {
+  const actions = options.proposalRevision
+    ? ["inspect", "revise"]
+    : options.collectionOnly
+      ? ["read", "reconcile"]
+      : options.proposalOnly
+        ? resolveProposalOnlyActions(options.updateProposals, options.supportsCompletion)
+        : SKILL_WORKSHOP_ACTIONS.filter(
+            (action) => action !== "complete" || options.supportsCompletion,
+          );
   return Type.Object(
     {
-      action: stringEnum(
-        proposalRevision
-          ? ["inspect", "revise"]
-          : collectionOnly
-            ? ["read", "reconcile"]
-            : [...SKILL_WORKSHOP_ACTIONS],
-        {
-          description: proposalRevision
-            ? "inspect = read the exact operator-reviewed proposal; revise = update only that proposal with the run-bound expected revision hash."
-            : collectionOnly
-              ? SKILL_COLLECTION_ACTION_DESCRIPTION
-              : "create = new skill; read = existing live skill when complete content fits; prepare_patch = authorize one exact non-empty span and return bounded context, with only one prepared span active per skill; patch = targeted find-and-replace after read or prepare_patch; update = full-body rewrite; history = show up to 20 recent collection review outcomes and drop reasons; restore_collection = restore the collection backup retained by the last cleanup; revise = existing pending proposal; list/inspect discover pending proposals (not filesystem search); evaluate runs plugin evaluators for the exact draft; apply/reject/quarantine are explicit lifecycle actions; complete = finish an internal review when available.",
-        },
-      ),
+      action: stringEnum(actions, {
+        description: options.proposalRevision
+          ? "inspect = read the exact operator-reviewed proposal; revise = update only that proposal with the run-bound expected revision hash."
+          : options.collectionOnly
+            ? SKILL_COLLECTION_ACTION_DESCRIPTION
+            : "create = new skill; read = existing live skill when complete content fits; prepare_patch = authorize one exact non-empty span and return bounded context, with only one prepared span active per skill; patch = targeted find-and-replace after read or prepare_patch; update = full-body rewrite; history = show up to 20 recent collection review outcomes and drop reasons; restore_collection = restore the collection backup retained by the last cleanup; revise = existing pending proposal; list/inspect discover pending proposals (not filesystem search); evaluate runs plugin evaluators for the exact draft; apply/reject/quarantine are explicit lifecycle actions; complete = finish an internal review when available.",
+      }),
       proposal_id: Type.Optional(
         Type.String({
           description:

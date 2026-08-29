@@ -1,6 +1,7 @@
 // Gateway Protocol schema module defines protocol validation shapes.
 import type { Static } from "typebox";
 import { Type } from "typebox";
+import { GatewayRequestEffects } from "../gateway-request-effect.js";
 import { closedObject } from "./closed-object.js";
 import { GatewayClientIdSchema, GatewayClientModeSchema, NonEmptyString } from "./primitives.js";
 import { SessionVisibilitySchema } from "./sessions-sharing-values.js";
@@ -161,11 +162,17 @@ export const HelloOkSchema = closedObject({
   }),
 });
 
+export const GatewayRequestEffectSchema = Type.Union([
+  Type.Literal(GatewayRequestEffects.NOT_STARTED),
+  Type.Literal(GatewayRequestEffects.FAILED_NO_EFFECT),
+]);
+
 /** Standard structured error shape used in response frames and connect failures. */
 export const ErrorShapeSchema = closedObject({
   code: NonEmptyString,
   message: NonEmptyString,
   details: Type.Optional(Type.Unknown()),
+  requestEffect: Type.Optional(GatewayRequestEffectSchema),
   retryable: Type.Optional(Type.Boolean()),
   retryAfterMs: Type.Optional(Type.Integer({ minimum: 0 })),
 });

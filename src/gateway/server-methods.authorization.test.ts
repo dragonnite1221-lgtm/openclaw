@@ -96,6 +96,7 @@ describe("gateway method authorization", () => {
     expect(denied).toHaveBeenCalledWith(false, undefined, {
       code: "FORBIDDEN",
       message: "missing scope: operator.write",
+      requestEffect: "not_started",
       details: {
         code: "MISSING_SCOPE",
         missingScope: "operator.write",
@@ -232,6 +233,7 @@ describe("gateway method authorization", () => {
     expect(respond).toHaveBeenCalledWith(false, undefined, {
       code: "FORBIDDEN",
       message: "missing scope: operator.write",
+      requestEffect: "not_started",
       details: {
         code: "MISSING_SCOPE",
         missingScope: "operator.write",

@@ -2238,13 +2238,17 @@ describe("createCopilotToolBridge tool conversion", () => {
       sourceName: string;
       toolCallId: string;
       parentToolCallId: string;
+      replaySafe?: boolean;
       input: unknown;
+      bindEffectReceipt: (target: unknown, receipt: { state: string }) => void;
     }) => Promise<unknown>;
     let catalogExecutor: CatalogExecutor | undefined;
     const observeToolTerminal = vi.fn(() => ({
       executionStarted: true,
       sideEffectEvidence: true,
+      effectReceipt: { state: "uncertain" as const },
     }));
+    const bindEffectReceipt = vi.fn();
     await createCopilotToolBridge({
       attemptParams: {
         config: { tools: { toolSearch: true } },
@@ -2279,7 +2283,9 @@ describe("createCopilotToolBridge tool conversion", () => {
         sourceName: "memory-lancedb",
         toolCallId: "catalog-forget-1",
         parentToolCallId: "tool-search-1",
+        replaySafe: false,
         input: args,
+        bindEffectReceipt,
       }),
     ).rejects.toThrow("catalog delete failed");
 
@@ -2288,9 +2294,13 @@ describe("createCopilotToolBridge tool conversion", () => {
       toolName: "memory_forget",
       arguments: args,
       executionStarted: true,
+      replaySafe: false,
       outcome: "failure",
       failure: { error: "catalog delete failed" },
       ownerMutation: { ownerKey: '["memory-lancedb","memory_forget"]' },
+    });
+    expect(bindEffectReceipt).toHaveBeenCalledWith(expect.any(Error), {
+      state: "uncertain",
     });
   });
 

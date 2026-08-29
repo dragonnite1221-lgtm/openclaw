@@ -380,6 +380,14 @@ export function createMeetingPluginEntryOptions<
           label: options.toolLabel,
           description: options.toolDescription,
           parameters: options.toolParameters,
+          classifyEffect(input) {
+            const action = asOptionalRecord(input)?.action;
+            return action === "status" || action === "transcript"
+              ? "read"
+              : action === "join" || action === "leave" || action === "speak"
+                ? "mutation"
+                : "unknown";
+          },
           async execute(_toolCallId, params) {
             const raw = asOptionalRecord(params) ?? {};
             const action = raw.action as MeetingToolAction;

@@ -46,10 +46,12 @@ import {
   applyAgentDefaultModelConfig,
   buildMediaReferenceDetails,
   buildTaskRunDetails,
+  classifyMediaGenerateEffect,
   createCapabilityProviderRuntimeDeps,
   hasExplicitMediaModel,
   hasGenerationToolAvailability,
   loadMediaToolReferences,
+  MEDIA_GENERATE_ACTIONS,
   normalizeMediaReferenceInputs,
   resolveCapabilityModelConfigForTool,
   resolveGenerateAction,
@@ -77,6 +79,7 @@ const MAX_GENERATED_MUSIC_PROBES = 8;
 const MusicGenerateToolSchema = Type.Object({
   action: Type.Optional(
     Type.String({
+      enum: [...MEDIA_GENERATE_ACTIONS],
       description: '"generate" default, "status" active task, "list" providers/models.',
     }),
   ),
@@ -555,6 +558,7 @@ export function createMusicGenerateTool(options?: {
     description:
       "Create song/jingle/beat/loop/soundtrack/anthem/instrumental. Make/generate music => call; lyrics-only request => text only. prompt: style/genre/mood/tempo/instruments/purpose; lyrics: exact sung words; image/images condition on reference image(s). action=list discovers providers/models. Session chat background: call once/request, await, then visible reply + structured media. status checks active task.",
     parameters: MusicGenerateToolSchema,
+    classifyEffect: classifyMediaGenerateEffect,
     execute: async (_toolCallId, rawArgs, signal) => {
       const args = rawArgs as Record<string, unknown>;
       const action = resolveGenerateAction(args);

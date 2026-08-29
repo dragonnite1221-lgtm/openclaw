@@ -72,7 +72,6 @@ describe("createCronToolSchema", () => {
         "enabled",
         "failureAlert",
         "name",
-        "owner",
         "pacing",
         "payload",
         "schedule",
@@ -82,6 +81,28 @@ describe("createCronToolSchema", () => {
         "wakeMode",
       ].toSorted(),
     );
+  });
+
+  it("keeps authenticated ownership out of the model-facing job schema", () => {
+    expect(propertyAt(schemaRecord, "job.owner")).toBeUndefined();
+    expect(JSON.stringify(providerSchemaRecord)).not.toContain('"owner"');
+  });
+
+  it("rejects create-only declaration metadata before an update starts", () => {
+    const tool = createCronTool();
+
+    expect(() =>
+      tool.finalizeBeforeToolCallParams?.(
+        { action: "update", jobId: "job-1", job: { declarationKey: "daily" } },
+        {},
+      ),
+    ).toThrow("job.declarationKey is add-only");
+    expect(() =>
+      tool.finalizeBeforeToolCallParams?.(
+        { action: "add", job: { owner: { agentId: "other" } } },
+        {},
+      ),
+    ).toThrow("job.owner is host-authored");
   });
 
   it("keeps declarationKey portable across model schema converters", () => {
