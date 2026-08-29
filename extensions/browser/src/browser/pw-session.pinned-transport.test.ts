@@ -79,28 +79,36 @@ afterEach(async () => {
 });
 
 describe("pw-session Playwright CDP transport", () => {
-  it("releases missing-context worker targets before Playwright receives them", async () => {
+  it("keeps HTTP fallback managed while releasing missing-context worker targets", async () => {
     const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
     await new Promise<void>((resolve) => {
       server.once("listening", () => resolve());
     });
     const port = (server.address() as { port: number }).port;
-    const cdpUrl = `ws://127.0.0.1:${port}/devtools/browser/test`;
+    const cdpUrl = `http://127.0.0.1:${port}`;
+    const transportUrl = `ws://127.0.0.1:${port}/devtools/browser/test`;
     const serverSocket = new Promise<import("ws").WebSocket>((resolve) => {
       server.on("connection", (socket) => resolve(socket));
     });
     const commands: Array<{ id: number; method: string; params?: unknown; sessionId?: string }> =
       [];
+    const resumeCommands: Array<{ id: number; sessionId?: string }> = [];
     server.on("connection", (socket) => {
       socket.addEventListener("message", (event) => {
         const command = JSON.parse(
           webSocketMessageToString(event.data),
         ) as (typeof commands)[number];
         commands.push(command);
+        if (command.method === "Runtime.runIfWaitingForDebugger") {
+          resumeCommands.push(command);
+          return;
+        }
         socket.send(JSON.stringify({ id: command.id, result: {} }));
       });
     });
-    getChromeWebSocketEndpointSpy.mockResolvedValue({ url: cdpUrl });
+    getChromeWebSocketEndpointSpy
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ url: transportUrl });
     const browser = makeBrowser("A", "https://example.com");
     connectOverCdpSpy.mockImplementationOnce((async (transportArg: unknown) => {
       expect(typeof transportArg).not.toBe("string");
@@ -148,21 +156,44 @@ describe("pw-session Playwright CDP transport", () => {
       }
 
       await vi.waitFor(() => {
-        expect(commands).toHaveLength(workerTypes.length * 2);
+        expect(commands).toHaveLength(workerTypes.length);
       });
       expect(commands).toEqual(
-        workerTypes.flatMap((_type, index) => [
+        workerTypes.map((_type, index) =>
           expect.objectContaining({
             id: expect.any(Number),
             method: "Runtime.runIfWaitingForDebugger",
             sessionId: `worker-session-${index}`,
           }),
+        ),
+      );
+      const firstResume = resumeCommands[0];
+      if (!firstResume) {
+        throw new Error("missing first worker resume command");
+      }
+      socket.send(JSON.stringify({ id: firstResume.id, result: {} }));
+      await vi.waitFor(() => {
+        expect(commands).toHaveLength(workerTypes.length + 1);
+      });
+      expect(commands.at(-1)).toEqual(
+        expect.objectContaining({
+          method: "Target.detachFromTarget",
+          params: { sessionId: "worker-session-0" },
+        }),
+      );
+      for (const command of resumeCommands.slice(1)) {
+        socket.send(JSON.stringify({ id: command.id, result: {} }));
+      }
+      await vi.waitFor(() => {
+        expect(commands).toHaveLength(workerTypes.length * 2);
+      });
+      expect(commands.slice(workerTypes.length + 1)).toEqual(
+        workerTypes.slice(1).map((_type, index) =>
           expect.objectContaining({
-            id: expect.any(Number),
             method: "Target.detachFromTarget",
-            params: { sessionId: `worker-session-${index}` },
+            params: { sessionId: `worker-session-${index + 1}` },
           }),
-        ]),
+        ),
       );
       await vi.waitFor(() => {
         expect(delivered).toEqual(forwardedTargets);

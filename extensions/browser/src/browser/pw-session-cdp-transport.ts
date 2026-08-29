@@ -4,7 +4,7 @@ import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import type { Browser, ConnectOverCDPTransport } from "playwright-core";
 import WebSocket from "ws";
 import { formatErrorMessage } from "../infra/errors.js";
-import { openCdpWebSocket } from "./cdp.helpers.js";
+import { isWebSocketUrl, openCdpWebSocket } from "./cdp.helpers.js";
 import { getPlaywrightCore } from "./playwright-core.runtime.js";
 type CdpSocketLookup = typeof dnsLookupCb;
 // Playwright allocates positive command IDs and reserves -9999 for Browser.close.
@@ -36,9 +36,16 @@ export async function connectOverCdpTransport(
     timeout: number;
     headers: Record<string, string>;
     lookup?: CdpSocketLookup;
+    resolveWebSocketUrl?: () => Promise<string | undefined>;
   },
 ): Promise<Browser> {
-  const ws = openCdpWebSocket(connectionUrl, {
+  const resolvedConnectionUrl = isWebSocketUrl(connectionUrl)
+    ? connectionUrl
+    : await opts.resolveWebSocketUrl?.();
+  if (!resolvedConnectionUrl) {
+    throw new Error("CDP endpoint did not expose a usable WebSocket URL.");
+  }
+  const ws = openCdpWebSocket(resolvedConnectionUrl, {
     headers: opts.headers,
     handshakeTimeoutMs: opts.timeout,
     lookup: opts.lookup,
@@ -57,6 +64,7 @@ export async function connectOverCdpTransport(
     let transportClosed = false;
     let transportCloseScheduled = false;
     let nextInternalCommandId = FIRST_INTERNAL_COMMAND_ID;
+    const pendingWorkerResumes = new Map<number, string>();
     const notifyTransportClosed = (reason: string) => {
       if (transportClosed) {
         return;
@@ -92,21 +100,23 @@ export async function connectOverCdpTransport(
       method: string,
       params: Record<string, unknown> | undefined,
       sessionId?: string,
-    ) => {
+    ): number => {
+      const id = nextInternalCommandId--;
       ws.send(
         JSON.stringify({
-          id: nextInternalCommandId--,
+          id,
           method,
           ...(params ? { params } : {}),
           sessionId,
         }),
       );
+      return id;
     };
     const releaseWorkerTarget = (sessionId: string) => {
-      // Playwright pauses attached targets and requires resume before detach.
-      // Release the exact worker session before hiding its unsupported attach event.
-      sendInternalCommand("Runtime.runIfWaitingForDebugger", undefined, sessionId);
-      sendInternalCommand("Target.detachFromTarget", { sessionId });
+      // Chrome dispatches session and root commands independently. Wait for the
+      // resume response before detach so the hidden worker cannot stay paused.
+      const resumeId = sendInternalCommand("Runtime.runIfWaitingForDebugger", undefined, sessionId);
+      pendingWorkerResumes.set(resumeId, sessionId);
     };
     const scheduleMessage = (message: object) => {
       setImmediate(() => {
@@ -167,6 +177,11 @@ export async function connectOverCdpTransport(
         }
         const id = parsed.id;
         if (typeof id === "number" && id <= FIRST_INTERNAL_COMMAND_ID) {
+          const workerSessionId = pendingWorkerResumes.get(id);
+          if (workerSessionId) {
+            pendingWorkerResumes.delete(id);
+            sendInternalCommand("Target.detachFromTarget", { sessionId: workerSessionId });
+          }
           return;
         }
         const workerSessionId = workerSessionWithoutContext(parsed);
