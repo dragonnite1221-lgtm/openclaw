@@ -61,6 +61,11 @@ const mocks = vi.hoisted(() => ({
     (): AuthHealthSummary => ({ now: 0, warnAfterMs: 0, profiles: [], providers: [] }),
   ),
   loadProviderUsageSummary: vi.fn(async (): Promise<UsageSummary> => emptyUsageSummary()),
+  resolveProviderAuths: vi.fn(async (params: { providers: string[] }) =>
+    params.providers
+      .filter((provider) => provider === "clawrouter" || provider === "deepseek")
+      .map((provider) => ({ provider, token: `${provider}-key` })),
+  ),
   listProviderUsagePluginDescriptors: vi.fn(() => [
     { provider: "anthropic", displayName: "Claude" },
     { provider: "deepseek", displayName: "DeepSeek" },
@@ -107,6 +112,16 @@ vi.mock("../../agents/auth-health.js", async () => {
 vi.mock("../../infra/provider-usage.load.js", () => ({
   loadProviderUsageSummary: mocks.loadProviderUsageSummary,
 }));
+
+vi.mock("../../infra/provider-usage.auth.js", async () => {
+  const actual = await vi.importActual<typeof import("../../infra/provider-usage.auth.js")>(
+    "../../infra/provider-usage.auth.js",
+  );
+  return {
+    ...actual,
+    resolveProviderAuths: mocks.resolveProviderAuths,
+  };
+});
 
 vi.mock("../../plugins/provider-runtime.js", () => ({
   listProviderUsagePluginDescriptors: mocks.listProviderUsagePluginDescriptors,
@@ -1599,6 +1614,75 @@ describe("models.authStatus", () => {
       });
     },
   );
+
+  it("keeps stored Anthropic Admin usage beside account-scoped OAuth usage", async () => {
+    const oauthProfileId = "anthropic:account";
+    const adminProfileId = "anthropic:billing";
+    const profiles = [
+      {
+        profileId: oauthProfileId,
+        provider: "anthropic",
+        type: "oauth",
+        status: "ok",
+        source: "store",
+        label: "anthropic@example.com",
+      },
+      {
+        profileId: adminProfileId,
+        provider: "anthropic",
+        type: "api_key",
+        status: "ok",
+        source: "store",
+        label: "Anthropic Admin API key",
+      },
+    ] satisfies AuthHealthSummary["profiles"];
+    mocks.buildAuthHealthSummary.mockReturnValue({
+      now: 0,
+      warnAfterMs: 0,
+      profiles,
+      providers: [{ provider: "anthropic", status: "ok", profiles }],
+    });
+    setPreparedAuthStore({
+      version: 1,
+      profiles: {
+        [oauthProfileId]: {
+          type: "oauth",
+          provider: "anthropic",
+          access: "account-access",
+          refresh: "account-refresh",
+          expires: 1_000_000,
+        },
+        [adminProfileId]: {
+          type: "api_key",
+          provider: "anthropic",
+          key: "sk-ant-admin-billing",
+        },
+      },
+    });
+    mocks.resolveProviderAuths.mockResolvedValueOnce([
+      { provider: "anthropic", token: "encoded-admin-token" },
+    ]);
+
+    await readAuthStatus();
+    await waitForFast(() => expect(mocks.loadProviderUsageSummary).toHaveBeenCalledTimes(2));
+
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({
+      providers: ["anthropic"],
+      agentDir: "/tmp/agent",
+      authStore: preparedAuthStore,
+      config: expect.any(Object),
+      timeoutMs: 5_000,
+    });
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({
+      providers: ["anthropic"],
+      authProfile: { provider: "anthropic", profileId: oauthProfileId },
+      agentDir: "/tmp/agent",
+      workspaceDir: "/tmp/workspace",
+      authStore: preparedAuthStore,
+      config: expect.any(Object),
+      timeoutMs: 5_000,
+    });
+  });
 
   it("uses effective profile order for the provider usage summary", async () => {
     const runtimeConfig = {};

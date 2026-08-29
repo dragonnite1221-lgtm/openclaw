@@ -369,6 +369,7 @@ async function resolveOAuthToken(params: {
       return {
         provider: params.provider as UsageProviderId,
         token: resolved.apiKey,
+        authProfileId: profileId,
         accountId:
           cred.type === "oauth" && "accountId" in cred
             ? (cred as { accountId?: string }).accountId
@@ -474,6 +475,7 @@ async function resolveProviderUsageAuthViaPlugin(params: {
         return auth
           ? {
               token: auth.token,
+              ...(auth.authProfileId ? { authProfileId: auth.authProfileId } : {}),
               ...(auth.accountId ? { accountId: auth.accountId } : {}),
               ...(auth.subscriptionType ? { subscriptionType: auth.subscriptionType } : {}),
               ...(auth.rateLimitTier ? { rateLimitTier: auth.rateLimitTier } : {}),
@@ -498,7 +500,9 @@ async function resolveProviderUsageAuthViaPlugin(params: {
       ...(resolved.subscriptionType ? { subscriptionType: resolved.subscriptionType } : {}),
       ...(resolved.rateLimitTier ? { rateLimitTier: resolved.rateLimitTier } : {}),
       ...(resolved.email ? { email: resolved.email } : {}),
-      ...(params.authProfileId ? { authProfileId: params.authProfileId } : {}),
+      ...(params.authProfileId || resolved.authProfileId
+        ? { authProfileId: params.authProfileId ?? resolved.authProfileId }
+        : {}),
     },
   };
 }
@@ -573,6 +577,7 @@ export async function resolveProviderAuths(params: {
   agentDir?: string;
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
+  preserveAuthProfileId?: boolean;
   onError?: (provider: UsageProviderId, error: unknown) => void;
 }): Promise<ProviderAuth[]> {
   if (params.auth) {
@@ -600,6 +605,14 @@ export async function resolveProviderAuths(params: {
     params.getStore !== undefined ||
     hasAnyAuthProfileStoreSource(params.agentDir);
   const auths: ProviderAuth[] = [];
+  const appendAuth = (auth: ProviderAuth) => {
+    if (params.preserveAuthProfileId) {
+      auths.push(auth);
+      return;
+    }
+    const { authProfileId: _authProfileId, ...publicAuth } = auth;
+    auths.push(publicAuth);
+  };
 
   for (const provider of params.providers) {
     try {
@@ -642,7 +655,7 @@ export async function resolveProviderAuths(params: {
           provider,
         });
         if (pluginAuth.auth) {
-          auths.push(pluginAuth.auth);
+          appendAuth(pluginAuth.auth);
           continue;
         }
         if (pluginAuth.handled) {
@@ -654,7 +667,7 @@ export async function resolveProviderAuths(params: {
         provider,
       });
       if (fallbackAuth) {
-        auths.push(fallbackAuth);
+        appendAuth(fallbackAuth);
       }
     } catch (error) {
       if (!params.onError) {

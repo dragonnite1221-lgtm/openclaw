@@ -47,7 +47,10 @@ import {
 } from "../../agents/provider-auth-aliases.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { hasConfiguredSecretInput } from "../../config/types.secrets.js";
-import { resolveProviderUsageAuthEnvCredentialProviders } from "../../infra/provider-usage.auth.js";
+import {
+  resolveProviderAuths,
+  resolveProviderUsageAuthEnvCredentialProviders,
+} from "../../infra/provider-usage.auth.js";
 import { providerUsageLabel, resolveUsageProviderId } from "../../infra/provider-usage.shared.js";
 import type { UsageProviderId } from "../../infra/provider-usage.types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -89,8 +92,6 @@ export type {
 } from "./models-auth-status.types.js";
 
 const log = createSubsystemLogger("models-auth-status");
-const apiKeyUsageStatusProviders = new Set<UsageProviderId>(["clawrouter", "deepseek"]);
-
 type PreparedAuthMetadataLookupParams = ProviderAuthAliasLookupParams & {
   metadataSnapshot: NonNullable<
     Awaited<ReturnType<typeof readPreparedCatalog>>
@@ -792,6 +793,32 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
         env: process.env,
         plugins: preparedSnapshot.metadataSnapshot.plugins,
       });
+      const storedProviderWideCandidates = [
+        ...new Set(
+          authHealth.profiles
+            .filter((profile) => profile.type === "api_key")
+            .map((profile) =>
+              resolveUsageProviderId(profile.provider, { credentialType: profile.type }),
+            )
+            .filter((provider): provider is UsageProviderId => Boolean(provider)),
+        ),
+      ];
+      if (storedProviderWideCandidates.length > 0) {
+        const storedProviderAuths = await resolveProviderAuths({
+          providers: storedProviderWideCandidates,
+          store,
+          agentDir,
+          config: cfg,
+          env: process.env,
+          preserveAuthProfileId: true,
+          onError: () => undefined,
+        });
+        for (const auth of storedProviderAuths) {
+          if (!auth.authProfileId) {
+            providerWideUsageIds.add(auth.provider);
+          }
+        }
+      }
       const usageProviderIds = [
         ...new Set(
           authHealth.profiles
@@ -805,7 +832,7 @@ export const modelsAuthStatusHandlers: GatewayRequestHandlers = {
               if (p.type === "oauth" || p.type === "token") {
                 return providerWideUsageIds.has(usageProvider);
               }
-              return p.type === "api_key" && apiKeyUsageStatusProviders.has(usageProvider);
+              return p.type === "api_key" && providerWideUsageIds.has(usageProvider);
             })
             .map((p) => resolveUsageProviderId(p.provider, { credentialType: p.type }))
             .filter((id): id is UsageProviderId => Boolean(id)),

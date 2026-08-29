@@ -216,6 +216,50 @@ describe("resolveProviderAuths plugin boundary", () => {
     );
   });
 
+  it("optionally reports the saved profile selected by unscoped auth", async () => {
+    const profileId = "openai:first";
+    const store = {
+      profiles: {
+        [profileId]: {
+          type: "oauth",
+          provider: "openai",
+          access: "first-access",
+          refresh: "first-refresh",
+          expires: Date.now() + 60_000,
+        },
+      },
+    };
+    resolveAuthProfileOrderMock.mockReturnValue([profileId]);
+    resolveApiKeyForProfileMock.mockResolvedValue({
+      apiKey: "first-access",
+      provider: "openai",
+    });
+    resolveProviderUsageAuthWithPluginMock.mockImplementation(async (rawParams) => {
+      const params = rawParams as {
+        context: {
+          resolveOAuthToken: () => Promise<{ token: string; authProfileId?: string } | null>;
+        };
+      };
+      return params.context.resolveOAuthToken();
+    });
+
+    await expect(
+      resolveProviderAuthsForTest({
+        providers: ["openai"],
+        store: store as never,
+        env: {},
+        preserveAuthProfileId: true,
+      }),
+    ).resolves.toEqual([{ provider: "openai", token: "first-access", authProfileId: profileId }]);
+    await expect(
+      resolveProviderAuthsForTest({
+        providers: ["openai"],
+        store: store as never,
+        env: {},
+      }),
+    ).resolves.toEqual([{ provider: "openai", token: "first-access" }]);
+  });
+
   it("preserves exact plugin auth failures for direct callers", async () => {
     const authError = new Error("plugin auth failed");
     resolveProviderUsageAuthWithPluginMock.mockRejectedValueOnce(authError);

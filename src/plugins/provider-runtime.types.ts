@@ -175,6 +175,8 @@ export type ProviderResolveUsageAuthContext = {
 export type ProviderUsageAuthToken = {
   token: string;
   accountId?: string;
+  /** Saved profile that supplied this token, when resolution selected one. */
+  authProfileId?: string;
   /** Non-secret plan metadata from the resolved credential (e.g. Claude "max"). */
   subscriptionType?: string;
   rateLimitTier?: string;
