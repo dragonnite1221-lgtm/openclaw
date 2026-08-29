@@ -67,7 +67,6 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   @state() private keyDraft = "";
   @state() private pendingLogoutProvider: string | null = null;
   @state() private profileOrders: Record<string, string[]> = {};
-  @state() private profileOrderUnsupported = false;
   @state() private addProviderOpen = false;
   @state() private addProviderId = "";
   @state() private addProviderKey = "";
@@ -243,7 +242,6 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     this.closeKeyEditor();
     this.pendingLogoutProvider = null;
     this.profileOrders = {};
-    this.profileOrderUnsupported = false;
     this.pendingProfileOrders.clear();
     this.addProviderOpen = false;
     this.addProviderId = "";
@@ -606,9 +604,6 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
           ) {
             return;
           }
-          if (isMissingMethodError(error)) {
-            this.profileOrderUnsupported = true;
-          }
           const ownsDraft = this.profileOrders[provider] === pending.optimisticOrder;
           if (ownsDraft) {
             const { [provider]: _failed, ...remaining } = this.profileOrders;
@@ -622,6 +617,11 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       }
     } finally {
       this.activeProfileOrderProviders.delete(provider);
+      // A stale save can finish after a new agent queued the same provider.
+      // Re-enter after releasing the slot so the new scope's intent is not stranded.
+      if (this.pendingProfileOrders.has(provider)) {
+        void this.flushProfileOrder(provider);
+      }
     }
   }
 
@@ -733,10 +733,6 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
         .map((provider) => provider.provider) ?? []),
     ]);
     const advertised = isGatewayMethodAdvertised(gatewaySnapshot, "models.probe");
-    const profileOrderAdvertised = isGatewayMethodAdvertised(
-      gatewaySnapshot,
-      "models.authOrderSet",
-    );
     const body = renderModelProviders({
       connected: gatewaySnapshot.phase === "connected",
       loading: gatewaySnapshot.phase === "connected" && this.data === null && !rosterError,
@@ -768,7 +764,6 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       keyEditorProvider: this.keyEditorProvider,
       keyDraft: this.keyDraft,
       pendingLogoutProvider: this.pendingLogoutProvider,
-      profileOrderAvailable: !this.profileOrderUnsupported && profileOrderAdvertised !== false,
       profileOrders: this.profileOrders,
       addProviderOpen: this.addProviderOpen,
       addProviderId: this.addProviderId,

@@ -72,7 +72,6 @@ type ModelProvidersViewProps = {
   keyEditorProvider: string | null;
   keyDraft: string;
   pendingLogoutProvider: string | null;
-  profileOrderAvailable: boolean;
   profileOrders: Record<string, string[]>;
   addProviderOpen: boolean;
   addProviderId: string;
@@ -459,7 +458,7 @@ function renderProviderRow(card: ModelProviderCard, props: ModelProvidersViewPro
       ${renderProviderProfiles(card, {
         busy: props.busy,
         canMutate: props.canMutate && !props.configBusy,
-        profileOrderAvailable: props.profileOrderAvailable,
+        mutationBlockedReason: props.mutationBlockedReason,
         profileOrders: props.profileOrders,
         onOpenModelSetup: props.onOpenModelSetup,
         onProfileOrderChange: props.onProfileOrderChange,

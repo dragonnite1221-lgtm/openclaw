@@ -510,6 +510,77 @@ describe("ModelProvidersPage agent scope", () => {
     expect(page.messages.openai).toBeUndefined();
   });
 
+  it("drains a queued profile order after switching agents during an active save", async () => {
+    const { agentSelection, context, notifySelection, request } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const originalRequest = request.getMockImplementation()!;
+    const firstSave = deferred<unknown>();
+    request.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "models.authOrderSet" && requestCount(request, method) === 1) {
+        return firstSave.promise;
+      }
+      void params;
+      return originalRequest(method);
+    });
+
+    page.setProfileOrder("openai", "openai", ["openai:two", "openai:one"]);
+    await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(1));
+    agentSelection.state.selectedId = "writer";
+    agentSelection.state.scopeId = "writer";
+    notifySelection();
+    await vi.waitFor(() => expect(page.selectedAgentId).toBe("writer"));
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    page.setProfileOrder("openai", "openai", ["openai:one", "openai:two"]);
+
+    firstSave.resolve({});
+    await vi.waitFor(() => expect(requestCount(request, "models.authOrderSet")).toBe(2));
+    expect(request).toHaveBeenLastCalledWith("models.authOrderSet", {
+      provider: "openai",
+      profileIds: ["openai:one", "openai:two"],
+      agentId: "writer",
+    });
+  });
+
+  it("keeps ordering available when a same-version gateway rejects the core method", async () => {
+    const { context, request } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    page.data = {
+      ...EMPTY_MODEL_PROVIDERS_DATA,
+      config: {},
+      authStatus: {
+        ts: 1,
+        providers: [
+          {
+            provider: "openai",
+            displayName: "OpenAI",
+            status: "ok",
+            profiles: [
+              { profileId: "openai:one", type: "oauth", status: "ok" },
+              { profileId: "openai:two", type: "oauth", status: "ok" },
+            ],
+          },
+        ],
+      },
+      updatedAt: 1,
+    };
+    page.requestUpdate();
+    await page.updateComplete;
+    request.mockRejectedValueOnce(new Error("method not found"));
+    const secondGrip = page.querySelectorAll<HTMLButtonElement>(
+      ".model-providers__profile-grip",
+    )[1];
+
+    secondGrip?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    await vi.waitFor(() => expect(page.messages.openai?.text).toContain("method not found"));
+    await page.updateComplete;
+
+    expect(
+      page.querySelectorAll<HTMLButtonElement>(".model-providers__profile-grip")[1]?.disabled,
+    ).toBe(false);
+  });
+
   it("stops queued agent-scoped logouts when route data changes the selected agent", async () => {
     const { agentSelection, context, request, snapshot } = createHarness("main");
     const page = appendPage(context);

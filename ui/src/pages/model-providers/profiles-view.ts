@@ -13,7 +13,7 @@ type ProviderProfile = ModelProviderCard["profiles"][number];
 export type ProviderProfilesViewProps = {
   busy: Record<string, boolean>;
   canMutate: boolean;
-  profileOrderAvailable: boolean;
+  mutationBlockedReason: string | null;
   profileOrders: Record<string, string[]>;
   onOpenModelSetup: () => void;
   onProfileOrderChange: (cardId: string, provider: string, profileIds: string[] | null) => void;
@@ -92,6 +92,17 @@ function completeOrder(profiles: readonly ProviderProfile[], order: readonly str
       members.delete(profile.profileId) ? [profile.profileId] : [],
     ),
   ];
+}
+
+function movableOrder(
+  card: ModelProviderCard,
+  provider: string,
+  drafts: Record<string, string[]>,
+): string[] {
+  const members = new Set(profilesForProvider(card, provider).map((profile) => profile.profileId));
+  return (drafts[provider] ?? card.profileOrders[provider] ?? []).filter((profileId) =>
+    members.has(profileId),
+  );
 }
 
 function orderedProfiles(card: ModelProviderCard, drafts: Record<string, string[]>) {
@@ -223,9 +234,9 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
   const providers = [
     ...new Set(profiles.map((profile) => card.profileProviderIds[profile.profileId] ?? card.id)),
   ];
-  const reorderOffered =
-    props.profileOrderAvailable &&
-    providers.some((provider) => profilesForProvider(card, provider).length > 1);
+  const reorderOffered = providers.some(
+    (provider) => movableOrder(card, provider, props.profileOrders).length > 1,
+  );
   return html`
     <section class="model-providers__profiles" aria-label=${t("modelProviders.profiles.title")}>
       <div class="model-providers__profiles-heading">
@@ -241,16 +252,16 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
           >
         </span>
         <span class="model-providers__profiles-heading-actions">
-          ${card.profileOrderStoredProviders.map((provider) =>
-            props.profileOrderAvailable
-              ? html`<button
-                  type="button"
-                  class="btn btn--sm btn--ghost"
-                  @click=${() => props.onProfileOrderChange(card.id, provider, null)}
-                >
-                  ${t("modelProviders.profiles.resetOrder")}
-                </button>`
-              : nothing,
+          ${card.profileOrderStoredProviders.map(
+            (provider) => html`<button
+              type="button"
+              class="btn btn--sm btn--ghost"
+              ?disabled=${!props.canMutate}
+              title=${!props.canMutate ? (props.mutationBlockedReason ?? "") : ""}
+              @click=${() => props.onProfileOrderChange(card.id, provider, null)}
+            >
+              ${t("modelProviders.profiles.resetOrder")}
+            </button>`,
           )}
           <button type="button" class="btn btn--sm" @click=${props.onOpenModelSetup}>
             ${t("modelProviders.profiles.addAccount")}
@@ -263,15 +274,14 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
           (profile) => profile.profileId,
           (profile) => {
             const provider = card.profileProviderIds[profile.profileId] ?? card.id;
-            const providerProfiles = profilesForProvider(card, provider);
-            const order = completeOrder(
-              providerProfiles,
-              props.profileOrders[provider] ?? card.profileOrders[provider] ?? [],
-            );
+            const order = movableOrder(card, provider, props.profileOrders);
             const index = order.indexOf(profile.profileId);
-            const canMove =
-              props.profileOrderAvailable && props.canMutate && order.length > 1 && index >= 0;
+            const canMove = props.canMutate && order.length > 1 && index >= 0;
             const identity = profileIdentity(profile);
+            const logoutLabel = t("modelProviders.logout.actionFor", { account: identity });
+            const logoutBlocked = !props.canMutate
+              ? (props.mutationBlockedReason ?? "")
+              : logoutLabel;
             const move = (targetId: string, position: ArrayDropPosition) => {
               const next = moveArrayEntry(order, profile.profileId, targetId, position);
               if (next.some((profileId, candidate) => profileId !== order[candidate])) {
@@ -328,9 +338,11 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                 <button
                   type="button"
                   class="model-providers__profile-logout"
-                  aria-label=${t("modelProviders.logout.actionFor", { account: identity })}
-                  title=${t("modelProviders.logout.actionFor", { account: identity })}
-                  ?disabled=${profile.logoutSupported !== true || props.busy[`logout:${card.id}`]}
+                  aria-label=${logoutLabel}
+                  title=${logoutBlocked}
+                  ?disabled=${!props.canMutate ||
+                  profile.logoutSupported !== true ||
+                  props.busy[`logout:${card.id}`]}
                   @click=${() => props.onLogoutProfile(card.id, provider, profile.profileId)}
                 >
                   ${logoutIcon}

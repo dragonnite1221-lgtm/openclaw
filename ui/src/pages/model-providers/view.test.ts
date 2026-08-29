@@ -59,7 +59,6 @@ function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProviders
     keyEditorProvider: null,
     keyDraft: "",
     pendingLogoutProvider: null,
-    profileOrderAvailable: true,
     profileOrders: {},
     addProviderOpen: false,
     addProviderId: "",
@@ -913,6 +912,70 @@ describe("renderModelProviders", () => {
       "openai:two",
       "openai:one",
     ]);
+  });
+
+  it("keeps profiles omitted from an explicit order excluded during reordering", () => {
+    const onProfileOrderChange = vi.fn();
+    const container = mount(
+      props({
+        cards: [
+          card({
+            profiles: [
+              { profileId: "openai:one", type: "oauth", status: "ok" },
+              { profileId: "openai:two", type: "oauth", status: "ok" },
+              { profileId: "openai:excluded", type: "oauth", status: "ok" },
+            ],
+            profileProviderIds: {
+              "openai:one": "openai",
+              "openai:two": "openai",
+              "openai:excluded": "openai",
+            },
+            profileOrders: { openai: ["openai:one", "openai:two"] },
+          }),
+        ],
+        onProfileOrderChange,
+      }),
+    );
+    const grips = container.querySelectorAll<HTMLButtonElement>(".model-providers__profile-grip");
+
+    expect(grips[2]?.disabled).toBe(true);
+    grips[1]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+
+    expect(onProfileOrderChange).toHaveBeenCalledWith("openai", "openai", [
+      "openai:two",
+      "openai:one",
+    ]);
+  });
+
+  it("disables roster mutations when provider settings are read-only", () => {
+    const container = mount(
+      props({
+        canMutate: false,
+        mutationBlockedReason: "Operator admin access required",
+        cards: [
+          card({
+            profiles: [
+              {
+                profileId: "openai:one",
+                type: "oauth",
+                status: "ok",
+                logoutSupported: true,
+              },
+            ],
+            profileProviderIds: { "openai:one": "openai" },
+            profileOrders: { openai: ["openai:one"] },
+            profileOrderStoredProviders: ["openai"],
+          }),
+        ],
+      }),
+    );
+    const reset = button(container, "Reset");
+    const logout = container.querySelector<HTMLButtonElement>(".model-providers__profile-logout");
+
+    expect(reset?.disabled).toBe(true);
+    expect(reset?.title).toBe("Operator admin access required");
+    expect(logout?.disabled).toBe(true);
+    expect(logout?.title).toBe("Operator admin access required");
   });
 
   it("uses the original config key for credential mutations", () => {
