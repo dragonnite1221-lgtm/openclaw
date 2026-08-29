@@ -1038,6 +1038,9 @@ describe("Crabbox worker provider", () => {
       (call) => call.argv[1] === "run" && String(call.options.input).includes("node run"),
     )?.options.input;
     expect(String(setup)).toContain("node run --ephemeral --display-name 'Bound worker'");
+    expect(String(setup)).toContain(
+      'OPENCLAW_STATE_DIR="$state_dir" "$@" plugins enable cua-computer',
+    );
     expect(String(setup)).not.toContain("config set nodeHost.workerRuns.enabled");
     expect(String(setup)).not.toContain("setup-code");
     expect(calls.flatMap((call) => call.argv)).not.toContain("ssh");

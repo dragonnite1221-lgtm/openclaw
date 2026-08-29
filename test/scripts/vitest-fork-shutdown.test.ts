@@ -9,18 +9,19 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const fixture = fileURLToPath(new URL("../fixtures/vitest-fork-shutdown.mjs", import.meta.url));
 
 it.each([
-  { scenario: "slow-exit", setup: "shared", fail: false },
-  { scenario: "slow-exit", setup: "env", fail: true },
-  { scenario: "natural-exit", setup: "raw", fail: false },
-  { scenario: "plain", setup: "shared", fail: false },
-  { scenario: "threads", setup: "env", fail: false },
-  { scenario: "vmForks", setup: "raw", fail: false },
-  { scenario: "custom", setup: "raw", fail: false },
-  { scenario: "custom-opt-in", setup: "raw", fail: false },
-  { scenario: "hung-cleanup", setup: "shared", fail: false },
-  { scenario: "hung-exit", setup: "shared", fail: false },
-  { scenario: "bad-exit", setup: "shared", fail: false },
-  { scenario: "forced", setup: "raw", fail: false },
+  { scenario: "slow-exit", setup: "shared", fail: false, profile: true },
+  { scenario: "slow-exit", setup: "env", fail: true, profile: true },
+  { scenario: "natural-exit", setup: "raw", fail: false, profile: true },
+  { scenario: "plain", setup: "shared", fail: false, profile: false },
+  { scenario: "threads", setup: "env", fail: false, profile: true },
+  // Inspector profiling supports only forks/threads; VM/custom pools still prove shutdown.
+  { scenario: "vmForks", setup: "raw", fail: false, profile: false },
+  { scenario: "custom", setup: "raw", fail: false, profile: false },
+  { scenario: "custom-opt-in", setup: "raw", fail: false, profile: false },
+  { scenario: "hung-cleanup", setup: "shared", fail: false, profile: true },
+  { scenario: "hung-exit", setup: "shared", fail: false, profile: true },
+  { scenario: "bad-exit", setup: "shared", fail: false, profile: true },
+  { scenario: "forced", setup: "raw", fail: false, profile: false },
 ])("joins $scenario shutdown with $setup setup (test failure: $fail)", async (options) => {
   const root = tempDirs.make("vitest-fork-shutdown-");
   const { stdout } = await execFileAsync(
@@ -32,7 +33,7 @@ it.each([
     },
   );
   const result = JSON.parse(stdout);
-  const { scenario, setup, fail } = options;
+  const { scenario, setup, fail, profile } = options;
   if (scenario === "forced") {
     // Node uses TerminateProcess for TERM on Windows; POSIX exercises escalation.
     expect(result.signal).toBe(process.platform === "win32" ? "SIGTERM" : "SIGKILL");
@@ -68,8 +69,10 @@ it.each([
     );
     expect(result.events).toContainEqual({ event: "terminate", signal: "SIGTERM" });
   } else if (scenario !== "plain") {
-    expect(result.profiles.cpu, result.output).toBeGreaterThan(0);
-    expect(result.profiles.heap, result.output).toBeGreaterThan(0);
+    if (profile) {
+      expect(result.profiles.cpu, result.output).toBeGreaterThan(0);
+      expect(result.profiles.heap, result.output).toBeGreaterThan(0);
+    }
     expect(result.events.some((event: { event: string }) => event.event === "terminate")).toBe(
       false,
     );

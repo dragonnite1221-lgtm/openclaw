@@ -315,7 +315,10 @@ function runGatewayPendingWorkContinuation<T>(params: {
   context: GatewayRequestContext;
   run: () => Promise<T>;
 }): Promise<T> | null {
-  if (getGatewaySuspendAdmissionPhase() !== "draining" || !isRecord(params.requestParams)) {
+  if (
+    (!isGatewayRestartDraining() && getGatewaySuspendAdmissionPhase() !== "draining") ||
+    !isRecord(params.requestParams)
+  ) {
     return null;
   }
   const request = params.requestParams;

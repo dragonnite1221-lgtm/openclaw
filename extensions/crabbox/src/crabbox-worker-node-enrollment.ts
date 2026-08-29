@@ -1,4 +1,5 @@
 import type { WorkerProvider } from "openclaw/plugin-sdk/plugin-entry";
+import { createCrabboxXfceSessionEnvironment } from "./crabbox-worker-desktop-setup.js";
 
 const CLOUD_SETUP_CODE_ENV = "CRABBOX_WORKER_SETUP_CODE";
 
@@ -15,6 +16,7 @@ function shellQuote(value: string): string {
 export function createCrabboxNodeEnrollmentSetup(params: {
   enrollment: CrabboxWorkerNodeEnrollment;
   executionMode?: NonNullable<WorkerProvider["supportedExecutionModes"]>[number];
+  desktop?: boolean;
   leaseId: string;
 }): { command: string; forwardedEnv?: Record<string, string> } {
   const { enrollment, executionMode, leaseId } = params;
@@ -132,6 +134,12 @@ export function createCrabboxNodeEnrollmentSetup(params: {
     '  set -- npx --yes --package "$package_spec" -- openclaw',
     "fi",
     ...prepareCodex(),
+    ...(params.desktop
+      ? [
+          ...createCrabboxXfceSessionEnvironment(),
+          'OPENCLAW_STATE_DIR="$state_dir" "$@" plugins enable cua-computer',
+        ]
+      : []),
     `setsid -f sh -c 'printf "%s\\n" "$$" >"$1"; shift; exec "$@"' sh "$pid_file" env OPENCLAW_STATE_DIR="$state_dir" "$@" ${launch} >"$state_dir/node.log" 2>&1 </dev/null`,
     'for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$pid_file" ] && break; sleep 0.1; done',
     'test -s "$pid_file"',

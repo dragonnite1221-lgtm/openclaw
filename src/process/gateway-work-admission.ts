@@ -291,6 +291,18 @@ export function tryBeginGatewayRestartStartupRootWorkAdmission(): GatewayRootWor
   return createGatewayRootWorkAdmission();
 }
 
+/** Shutdown owns remote cleanup replies without reopening admission to new work. */
+export async function runWithGatewayShutdownRootWorkAdmission<T>(
+  run: () => Promise<T>,
+): Promise<T> {
+  const admission = createGatewayRootWorkAdmission();
+  try {
+    return await admission.run(run);
+  } finally {
+    admission.release();
+  }
+}
+
 /**
  * Admits only the exact predecessor-bound restart selected by the RPC router.
  * The held root preserves signal-to-drain ordering without reopening suspension.

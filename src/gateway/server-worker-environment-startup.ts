@@ -132,6 +132,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
     { createWorkerSessionToolExecutor },
     { createWorkerNodeDesktopCarrier },
     { createWorkerNodePortalCarrier },
+    { createWorkerComputerService },
     { resolveWorkerProvider },
   ] = await Promise.all([
     import("./worker-environments/service.js"),
@@ -148,6 +149,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
     import("./worker-environments/worker-session-tool-executor.js"),
     import("./worker-environments/node-desktop-carrier.js"),
     import("./worker-environments/portal-node-carrier.js"),
+    import("./worker-environments/computer-transport.js"),
     import("../plugins/worker-provider-registry.js"),
   ]);
   // The Gateway state-directory lock proves that executors from the previous
@@ -281,7 +283,17 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
       throw new Error("GitHub publication is unavailable");
     },
   };
+  const computers = createWorkerComputerService({
+    store: params.startup.store,
+    placements: params.startup.placementStore,
+    resolveGatewayContext: params.resolveGatewayContext,
+    getNodeTransport: () => deviceRuntime.getNodeTransport(),
+    warn: (message) => workerEnvironmentLog.warn(message),
+  });
   const workerEnvironmentServiceBase = createWorkerEnvironmentService({
+    prepareComputer: computers.prepare,
+    executeComputer: computers.execute,
+    closeComputers: computers.close,
     store: params.startup.store,
     getConfig: getRuntimeConfig,
     // Plugin reload replaces the registry object; resolve against the live binding.

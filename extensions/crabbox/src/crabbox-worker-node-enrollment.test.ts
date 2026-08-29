@@ -90,3 +90,105 @@ describe.skipIf(process.platform === "win32")("worker bootstrap diagnostics", ()
     },
   );
 });
+
+// The remote owner is Linux Bash; macOS's bundled Bash 3 cannot execute mapfile.
+const hasBashMapfile = spawnSync("bash", ["-c", "type mapfile"], { encoding: "utf8" }).status === 0;
+
+function runEnrollment(params: {
+  desktop: boolean;
+  display?: string;
+  dbus?: string;
+  runtimeDir?: string;
+}) {
+  const root = tempDirs.make("crabbox-desktop-enrollment-");
+  const bin = path.join(root, "bin");
+  const proc = path.join(root, "proc");
+  fs.mkdirSync(bin);
+  fs.mkdirSync(path.join(proc, "123"), { recursive: true });
+  fs.writeFileSync(path.join(root, "desktop.env"), "CRABBOX_DESKTOP_ENV=xfce\nDISPLAY=:99\n");
+  fs.writeFileSync(
+    path.join(proc, "123", "environ"),
+    [
+      `DISPLAY=${params.display ?? ":99"}`,
+      `DBUS_SESSION_BUS_ADDRESS=${params.dbus ?? "unix:path=/run/fixture/bus"}`,
+      `XDG_RUNTIME_DIR=${params.runtimeDir ?? "/run/fixture"}`,
+      "UNRELATED_DESKTOP_VALUE=do-not-export",
+      "",
+    ].join("\0"),
+  );
+  const writeCommand = (name: string, body: string) =>
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\nset -eu\n${body}\n`, { mode: 0o700 });
+  writeCommand("pgrep", '[ "$*" = "-u $(id -u) -x xfce4-session" ]; echo 123');
+  writeCommand("setsid", 'shift; exec "$@"');
+  writeCommand(
+    "openclaw",
+    [
+      'if [ "$*" = "--version" ]; then echo "OpenClaw 2026.8.1"; exit 0; fi',
+      'printf "%s|%s|%s|%s|%s|%s\\n" "$*" "$OPENCLAW_STATE_DIR" "${DISPLAY-}" "${DBUS_SESSION_BUS_ADDRESS-}" "${XDG_RUNTIME_DIR-}" "${UNRELATED_DESKTOP_VALUE-}" >>"$HOME/calls"',
+    ].join("\n"),
+  );
+  const setup = createCrabboxNodeEnrollmentSetup({
+    desktop: params.desktop,
+    leaseId: "cbx_fixture",
+    enrollment: {
+      mode: "resume",
+      deviceId: "fixture-node",
+      displayName: "Fixture worker",
+      openclawVersion: "2026.8.1",
+      packageSpecs: ["openclaw@2026.8.1"],
+      waitForDeviceId: async () => "fixture-node",
+    },
+  });
+  // Replace only OS filesystem roots; execute the generated enrollment program unchanged.
+  const script = setup.command
+    .replaceAll("/var/lib/crabbox/desktop.env", path.join(root, "desktop.env"))
+    .replaceAll("/proc/$process_pid/environ", `${proc}/$process_pid/environ`);
+  const result = spawnSync("bash", [], {
+    input: script,
+    encoding: "utf8",
+    timeout: 10_000,
+    env: {
+      HOME: root,
+      PATH: `${bin}:${process.env.PATH}`,
+      DISPLAY: ":0",
+      DBUS_SESSION_BUS_ADDRESS: "wrong-login-session",
+      XDG_RUNTIME_DIR: "/run/wrong",
+    },
+  });
+  const callsPath = path.join(root, "calls");
+  return {
+    result,
+    calls: fs.existsSync(callsPath) ? fs.readFileSync(callsPath, "utf8").trim().split("\n") : [],
+    root,
+  };
+}
+
+describe.runIf(hasBashMapfile)("Crabbox desktop node enrollment", () => {
+  it("enables the isolated CUA provider and starts the node in the exact XFCE session", () => {
+    const { result, calls, root } = runEnrollment({ desktop: true });
+    expect(result.status, result.stderr).toBe(0);
+    const environment = `${root}/.openclaw/cloud-workers/cbx_fixture|:99|unix:path=/run/fixture/bus|/run/fixture|`;
+    expect(calls).toEqual([
+      `plugins enable cua-computer|${environment}`,
+      `node run --ephemeral --display-name Fixture worker|${environment}`,
+    ]);
+  });
+
+  it("does not enable CUA or inspect a desktop for a non-desktop lease", () => {
+    const { result, calls, root } = runEnrollment({ desktop: false, display: ":wrong" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toEqual([
+      `node run --ephemeral --display-name Fixture worker|${root}/.openclaw/cloud-workers/cbx_fixture|:0|wrong-login-session|/run/wrong|`,
+    ]);
+  });
+
+  it.each([{ display: ":0" }, { dbus: "" }, { runtimeDir: "relative-directory" }])(
+    "refuses enrollment when the XFCE session binding is invalid: %j",
+    (invalid) => {
+      const { result, calls } = runEnrollment({ desktop: true, ...invalid });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("XFCE session");
+      expect(calls).toEqual([]);
+    },
+  );
+});

@@ -6,7 +6,7 @@ import { spawnOwnedVitestProcess } from "../../scripts/lib/vitest-process.mts";
 import { installVitestProcessGroupCleanup } from "../../scripts/vitest-process-group.mts";
 
 const [root, rawOptions] = process.argv.slice(2);
-const { scenario, setup, fail } = JSON.parse(rawOptions);
+const { scenario, setup, fail, profile } = JSON.parse(rawOptions);
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const events = path.join(root, "events.jsonl");
 const ready = path.join(root, "ready");
@@ -252,29 +252,28 @@ it("completes the test before worker shutdown", () => {
 });
 `,
   );
-  const args =
-    scenario === "plain" || scenario === "custom"
-      ? [
-          path.join(repo, "scripts/run-vitest.mjs"),
-          "run",
-          "--config",
-          config,
-          "--root",
-          root,
-          "--configLoader",
-          "native",
-        ]
-      : [
-          path.join(repo, "scripts/run-vitest-profile.mts"),
-          "runner",
-          "--output-dir",
-          profiles,
-          "--",
-          "--root",
-          root,
-          "--configLoader",
-          "native",
-        ];
+  const args = !profile
+    ? [
+        path.join(repo, "scripts/run-vitest.mjs"),
+        "run",
+        "--config",
+        config,
+        "--root",
+        root,
+        "--configLoader",
+        "native",
+      ]
+    : [
+        path.join(repo, "scripts/run-vitest-profile.mts"),
+        "runner",
+        "--output-dir",
+        profiles,
+        "--",
+        "--root",
+        root,
+        "--configLoader",
+        "native",
+      ];
   const { child, completion } = spawnOwnedVitestProcess({
     command: process.execPath,
     args,
@@ -288,7 +287,10 @@ it("completes the test before worker shutdown", () => {
   child.stderr.on("data", (chunk) => {
     output += chunk;
   });
-  const { code } = await completion.finally(detachCleanup);
+  const { code, signal } = await completion.finally(detachCleanup);
+  if (!fs.existsSync(receipt)) {
+    throw new Error(`Worker fixture did not start (code=${code}, signal=${signal}):\n${output}`);
+  }
   const state = JSON.parse(fs.readFileSync(receipt, "utf8"));
   let workerStopped = false;
   try {
@@ -302,11 +304,11 @@ it("completes the test before worker shutdown", () => {
   }
   const counts = { cpu: 0, heap: 0 };
   for (const file of fs.readdirSync(profiles)) {
-    const profile = JSON.parse(fs.readFileSync(path.join(profiles, file), "utf8"));
-    if (file.endsWith(".cpuprofile") && profile.nodes?.length) {
+    const profileData = JSON.parse(fs.readFileSync(path.join(profiles, file), "utf8"));
+    if (file.endsWith(".cpuprofile") && profileData.nodes?.length) {
       counts.cpu++;
     }
-    if (file.endsWith(".heapprofile") && profile.head) {
+    if (file.endsWith(".heapprofile") && profileData.head) {
       counts.heap++;
     }
   }
