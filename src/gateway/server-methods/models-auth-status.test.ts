@@ -130,6 +130,7 @@ vi.mock("../server-model-catalog-auth.js", () => ({
   readPreparedCatalog: mocks.readPreparedCatalog,
 }));
 
+import { readProviderUsageStaleWhileRevalidate } from "./models-auth-status-usage-cache.js";
 import {
   aggregateRefreshableAuthStatus,
   invalidateModelAuthStatusCache,
@@ -137,6 +138,7 @@ import {
   type ModelAuthLogoutResult,
   type ModelAuthStatusResult,
 } from "./models-auth-status.js";
+import { getProviderUsageRuntimeSnapshot } from "./provider-usage-runtime.js";
 
 function createOptions(
   params: Record<string, unknown> = {},
@@ -1517,6 +1519,147 @@ describe("models.authStatus", () => {
       accountEmail: "clawd@example.com",
     });
     expect(refreshed.providers[0]?.profiles[0]?.usage).toEqual(refreshed.providers[0]?.usage);
+  });
+
+  it("uses effective profile order for the provider usage summary", async () => {
+    const runtimeConfig = {};
+    mocks.getRuntimeConfig.mockReturnValue(runtimeConfig);
+    const first = {
+      profileId: "openai:first",
+      provider: "openai",
+      type: "oauth",
+      status: "ok",
+      source: "store",
+      label: "first@example.com",
+    } satisfies AuthHealthSummary["profiles"][number];
+    const second = {
+      profileId: "openai:second",
+      provider: "openai",
+      type: "oauth",
+      status: "ok",
+      source: "store",
+      label: "second@example.com",
+    } satisfies AuthHealthSummary["profiles"][number];
+    mocks.buildAuthHealthSummary.mockReturnValue({
+      now: 0,
+      warnAfterMs: 0,
+      profiles: [first, second],
+      providers: [
+        {
+          provider: "openai",
+          status: "ok",
+          profiles: [first, second],
+          effectiveProfiles: [second, first],
+        },
+      ],
+    });
+    setPreparedAuthStore({
+      version: 1,
+      profiles: {
+        "openai:first": {
+          type: "oauth",
+          provider: "openai",
+          access: "first-access",
+          refresh: "first-refresh",
+          expires: 1_000_000,
+        },
+        "openai:second": {
+          type: "oauth",
+          provider: "openai",
+          access: "second-access",
+          refresh: "second-refresh",
+          expires: 1_000_000,
+        },
+      },
+    });
+    const usageSummary = (usedPercent: number): UsageSummary => ({
+      updatedAt: 0,
+      providers: [
+        {
+          provider: "openai",
+          displayName: "OpenAI",
+          windows: [{ label: "week", usedPercent }],
+        },
+      ],
+    });
+    mocks.loadProviderUsageSummary
+      .mockResolvedValueOnce(usageSummary(10))
+      .mockResolvedValueOnce(usageSummary(20));
+
+    let result: ModelAuthStatusResult | undefined;
+    await waitForFast(async () => {
+      result = await readAuthStatus();
+      expect(result.providers[0]?.usage?.windows[0]?.usedPercent).toBe(20);
+    });
+  });
+
+  it("does not evict shared provider usage when auth status only needs profile usage", async () => {
+    const runtimeConfig = {};
+    mocks.getRuntimeConfig.mockReturnValue(runtimeConfig);
+    const profile = {
+      profileId: "openai:default",
+      provider: "openai",
+      type: "oauth",
+      status: "ok",
+      source: "store",
+      label: "openai:default",
+    } satisfies AuthHealthSummary["profiles"][number];
+    mocks.buildAuthHealthSummary.mockReturnValue({
+      now: 0,
+      warnAfterMs: 0,
+      profiles: [profile],
+      providers: [{ provider: "openai", status: "ok", profiles: [profile] }],
+    });
+    setPreparedAuthStore({
+      version: 1,
+      profiles: {
+        "openai:default": {
+          type: "oauth",
+          provider: "openai",
+          access: "access",
+          refresh: "refresh",
+          expires: 1_000_000,
+        },
+      },
+    });
+    mocks.loadProviderUsageSummary.mockResolvedValue({
+      updatedAt: 0,
+      providers: [
+        {
+          provider: "openai",
+          displayName: "OpenAI",
+          windows: [{ label: "week", usedPercent: 10 }],
+        },
+      ],
+    });
+    const snapshot = getProviderUsageRuntimeSnapshot({
+      config: runtimeConfig,
+      agentId: "main",
+      agentDir: "/tmp/agent",
+      store: preparedAuthStore,
+    });
+    const cacheParams = {
+      agentId: "main",
+      agentDir: "/tmp/agent",
+      authStore: preparedAuthStore,
+      configRef: runtimeConfig,
+      credentialKey: snapshot.credentialKey,
+      providerIds: ["openai" as const],
+      now: 0,
+    };
+
+    readProviderUsageStaleWhileRevalidate(cacheParams);
+    await waitForFast(() => expect(mocks.loadProviderUsageSummary).toHaveBeenCalledOnce());
+    await mocks.loadProviderUsageSummary.mock.results[0]?.value;
+    expect(
+      readProviderUsageStaleWhileRevalidate(cacheParams).get("openai")?.windows[0]?.usedPercent,
+    ).toBe(10);
+
+    await readAuthStatus();
+
+    expect(
+      readProviderUsageStaleWhileRevalidate(cacheParams).get("openai")?.windows[0]?.usedPercent,
+    ).toBe(10);
   });
 
   it("adds DeepSeek API-key balance summaries to auth status usage", async () => {

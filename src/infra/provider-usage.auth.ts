@@ -139,6 +139,7 @@ function resolveProviderApiKeyFromConfigAndStore(params: {
   state: UsageAuthState;
   providerIds: string[];
   envDirect?: Array<string | undefined>;
+  profileIds?: readonly string[];
 }): string | undefined {
   return resolveProviderApiKeyCandidatesFromConfigAndStoreSync(params)[0];
 }
@@ -147,9 +148,10 @@ function resolveProviderApiKeyCandidatesFromConfigAndStoreSync(params: {
   state: UsageAuthState;
   providerIds: string[];
   envDirect?: Array<string | undefined>;
+  profileIds?: readonly string[];
 }): string[] {
   const candidates: string[] = [];
-  const configKey = resolveProviderApiKeyFromConfig(params);
+  const configKey = params.profileIds ? undefined : resolveProviderApiKeyFromConfig(params);
   if (configKey) {
     candidates.push(configKey);
   }
@@ -163,8 +165,12 @@ function resolveProviderApiKeyCandidatesFromConfigAndStoreSync(params: {
     ),
   );
   const store = resolveUsageAuthStore(params.state);
-  const credentials = [...normalizedProviderIds]
-    .flatMap((provider) => resolveAuthProfileOrder({ cfg: params.state.cfg, store, provider }))
+  const profileIds = params.profileIds
+    ? dedupeProfileIds([...params.profileIds])
+    : [...normalizedProviderIds].flatMap((provider) =>
+        resolveAuthProfileOrder({ cfg: params.state.cfg, store, provider }),
+      );
+  const credentials = profileIds
     .map((id) => store.profiles[id])
     .filter(
       (
@@ -189,9 +195,10 @@ async function resolveProviderApiKeyCandidatesFromConfigAndStore(params: {
   state: UsageAuthState;
   providerIds: string[];
   envDirect?: Array<string | undefined>;
+  profileIds?: readonly string[];
 }): Promise<string[]> {
   const candidates: string[] = [];
-  const configKey = resolveProviderApiKeyFromConfig(params);
+  const configKey = params.profileIds ? undefined : resolveProviderApiKeyFromConfig(params);
   if (configKey) {
     candidates.push(configKey);
   }
@@ -200,11 +207,13 @@ async function resolveProviderApiKeyCandidatesFromConfigAndStore(params: {
   }
 
   const store = resolveUsageAuthStore(params.state);
-  const profileIds = dedupeProfileIds(
-    normalizeProviderIds(params.providerIds).flatMap((provider) =>
-      resolveAuthProfileOrder({ cfg: params.state.cfg, store, provider }),
-    ),
-  );
+  const profileIds = params.profileIds
+    ? dedupeProfileIds([...params.profileIds])
+    : dedupeProfileIds(
+        normalizeProviderIds(params.providerIds).flatMap((provider) =>
+          resolveAuthProfileOrder({ cfg: params.state.cfg, store, provider }),
+        ),
+      );
   for (const profileId of profileIds) {
     const credential = store.profiles[profileId];
     if (!credential || (credential.type !== "api_key" && credential.type !== "token")) {
@@ -376,14 +385,26 @@ export async function resolveProviderProfileUsageAuth(params: {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
 }): Promise<ProviderAuth | null> {
+  const state: UsageAuthState = {
+    cfg: params.config,
+    env: params.env ?? process.env,
+    agentDir: params.agentDir,
+    allowAuthProfileStore: true,
+    store: params.store,
+  };
+  const pluginAuth = await resolveProviderUsageAuthViaPlugin({
+    state,
+    provider: params.provider,
+    authProfileId: params.profileId,
+  });
+  if (pluginAuth.auth) {
+    return pluginAuth.auth;
+  }
+  if (pluginAuth.handled) {
+    return null;
+  }
   const auth = await resolveOAuthToken({
-    state: {
-      cfg: params.config,
-      env: params.env ?? process.env,
-      agentDir: params.agentDir,
-      allowAuthProfileStore: true,
-      store: params.store,
-    },
+    state,
     provider: params.provider,
     profileIds: [params.profileId],
     allowProfileFallback: false,
@@ -394,6 +415,7 @@ export async function resolveProviderProfileUsageAuth(params: {
 async function resolveProviderUsageAuthViaPlugin(params: {
   state: UsageAuthState;
   provider: UsageProviderId;
+  authProfileId?: string;
 }): Promise<{ handled: boolean; auth: ProviderAuth | null }> {
   const resolved = await resolveProviderUsageAuthWithPlugin({
     provider: params.provider,
@@ -404,6 +426,7 @@ async function resolveProviderUsageAuthViaPlugin(params: {
       agentDir: params.state.agentDir,
       env: params.state.env,
       provider: params.provider,
+      ...(params.authProfileId ? { authProfileId: params.authProfileId } : {}),
       // Provider-owned hooks may route API keys to a different billing endpoint
       // even when generic fallback for this usage provider remains OAuth-only.
       resolveApiKeyFromConfigAndStore: (options) =>
@@ -411,18 +434,22 @@ async function resolveProviderUsageAuthViaPlugin(params: {
           state: params.state,
           providerIds: options?.providerIds ?? [params.provider],
           envDirect: options?.envDirect,
+          ...(params.authProfileId ? { profileIds: [params.authProfileId] } : {}),
         }),
       resolveApiKeyCandidatesFromConfigAndStore: (options) =>
         resolveProviderApiKeyCandidatesFromConfigAndStore({
           state: params.state,
           providerIds: options?.providerIds ?? [params.provider],
           envDirect: options?.envDirect,
+          ...(params.authProfileId ? { profileIds: [params.authProfileId] } : {}),
         }),
       resolveOAuthToken: async (options) => {
         const auth = await resolveOAuthToken({
           state: params.state,
           provider: options?.provider ?? params.provider,
           excludeProfileIds: options?.excludeProfileIds,
+          ...(params.authProfileId ? { profileIds: [params.authProfileId] } : {}),
+          ...(params.authProfileId ? { allowProfileFallback: false } : {}),
         });
         return auth
           ? {
@@ -451,6 +478,7 @@ async function resolveProviderUsageAuthViaPlugin(params: {
       ...(resolved.subscriptionType ? { subscriptionType: resolved.subscriptionType } : {}),
       ...(resolved.rateLimitTier ? { rateLimitTier: resolved.rateLimitTier } : {}),
       ...(resolved.email ? { email: resolved.email } : {}),
+      ...(params.authProfileId ? { authProfileId: params.authProfileId } : {}),
     },
   };
 }
