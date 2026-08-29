@@ -472,15 +472,30 @@ describe.runIf(runE2E)("Chrome native bootstrap Chromium E2E", () => {
             });
           }
         } finally {
-          await extensionPage.evaluate(
-            async () =>
-              await chrome.runtime.sendMessage({
-                type: "setAccessMode",
-                accessMode: "all",
-              }),
-          );
+          expect(
+            await extensionPage.evaluate(
+              async () =>
+                await chrome.runtime.sendMessage({
+                  type: "setAccessMode",
+                  accessMode: "all",
+                }),
+            ),
+          ).toMatchObject({ ok: true, accessMode: "all" });
           browserState.resolved.ssrfPolicy = creationPolicy;
         }
+        // The mode reply acknowledges extension policy, not the asynchronous CDP
+        // reattachments. Restore that fixture boundary before the first tabs read.
+        await expect
+          .poll(() => {
+            const targets = relay.bridge.devtoolsTargetDescriptors();
+            return {
+              controlled: targets.some((target) => target.url === controlled.url()),
+              attached: targets.every(
+                (target) => relay.bridge.captureOperationTarget(target.id)?.() === target.id,
+              ),
+            };
+          })
+          .toEqual({ controlled: true, attached: true });
         const playwrightTabsResponse = await dispatcher.dispatch({
           method: "GET",
           path: "/tabs",
