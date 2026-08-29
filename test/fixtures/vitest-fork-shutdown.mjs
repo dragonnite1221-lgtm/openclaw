@@ -252,29 +252,29 @@ it("completes the test before worker shutdown", () => {
 });
 `,
   );
-  const args =
-    scenario === "plain" || scenario === "custom"
-      ? [
-          path.join(repo, "scripts/run-vitest.mjs"),
-          "run",
-          "--config",
-          config,
-          "--root",
-          root,
-          "--configLoader",
-          "native",
-        ]
-      : [
-          path.join(repo, "scripts/run-vitest-profile.mts"),
-          "runner",
-          "--output-dir",
-          profiles,
-          "--",
-          "--root",
-          root,
-          "--configLoader",
-          "native",
-        ];
+  const directRunner = ["plain", "vmForks", "custom", "custom-opt-in"].includes(scenario);
+  const args = directRunner
+    ? [
+        path.join(repo, "scripts/run-vitest.mjs"),
+        "run",
+        "--config",
+        config,
+        "--root",
+        root,
+        "--configLoader",
+        "native",
+      ]
+    : [
+        path.join(repo, "scripts/run-vitest-profile.mts"),
+        "runner",
+        "--output-dir",
+        profiles,
+        "--",
+        "--root",
+        root,
+        "--configLoader",
+        "native",
+      ];
   const { child, completion } = spawnOwnedVitestProcess({
     command: process.execPath,
     args,

@@ -33,6 +33,7 @@ it.each([
   );
   const result = JSON.parse(stdout);
   const { scenario, setup, fail } = options;
+  const profiled = !["plain", "vmForks", "custom", "custom-opt-in"].includes(scenario);
   if (scenario === "forced") {
     // Node uses TerminateProcess for TERM on Windows; POSIX exercises escalation.
     expect(result.signal).toBe(process.platform === "win32" ? "SIGTERM" : "SIGKILL");
@@ -67,7 +68,7 @@ it.each([
       false,
     );
     expect(result.events).toContainEqual({ event: "terminate", signal: "SIGTERM" });
-  } else if (scenario !== "plain") {
+  } else if (profiled) {
     expect(result.profiles.cpu, result.output).toBeGreaterThan(0);
     expect(result.profiles.heap, result.output).toBeGreaterThan(0);
     expect(result.events.some((event: { event: string }) => event.event === "terminate")).toBe(
