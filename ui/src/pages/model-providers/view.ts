@@ -243,9 +243,8 @@ function renderProviderMetrics(
     hasProfileUsage && !card.usageIndependent && !hasApiKeyCredential(card)
       ? undefined
       : card.usage;
-  const hasLocalCost =
-    card.localCost && (card.localCost.totalTokens > 0 || card.localCost.totalCost > 0);
-  if (!usage && !hasLocalCost && hasProfiles) {
+  const localCost = renderLocalCost(card, costDays);
+  if (!usage && localCost === nothing && hasProfiles) {
     return nothing;
   }
   return html`
@@ -261,7 +260,7 @@ function renderProviderMetrics(
               ${t(supplementalLoading ? "common.loading" : "modelProviders.noStats")}
             </div>`
           : nothing}
-      ${renderLocalCost(card, costDays)}
+      ${localCost}
     </div>
   `;
 }
