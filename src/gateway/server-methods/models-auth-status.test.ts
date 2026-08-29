@@ -52,6 +52,7 @@ const mocks = vi.hoisted(() => ({
     async (): Promise<AuthProfileStore | null> => ({ version: 1, profiles: {} }),
   ),
   refreshActiveProviderAuthRuntimeSnapshot: vi.fn(async () => false),
+  refreshPreparedModelRuntimeSnapshots: vi.fn(async () => {}),
   clearCurrentProviderAuthState: vi.fn(),
   warmCurrentProviderAuthStateOffMainThread: vi.fn(async (_cfg: unknown) => {}),
   loadDeferredCatalog: vi.fn(),
@@ -115,6 +116,10 @@ vi.mock("../../secrets/runtime.js", () => ({
   refreshActiveProviderAuthRuntimeSnapshot: mocks.refreshActiveProviderAuthRuntimeSnapshot,
 }));
 
+vi.mock("../../agents/prepared-model-runtime.js", () => ({
+  refreshPreparedModelRuntimeSnapshots: mocks.refreshPreparedModelRuntimeSnapshots,
+}));
+
 vi.mock("../../agents/model-provider-auth.js", () => ({
   clearCurrentProviderAuthState: mocks.clearCurrentProviderAuthState,
   warmCurrentProviderAuthStateOffMainThread: mocks.warmCurrentProviderAuthStateOffMainThread,
@@ -135,12 +140,13 @@ import {
 
 function createOptions(
   params: Record<string, unknown> = {},
+  scopes: string[] = ["operator.admin"],
 ): GatewayRequestHandlerOptions & { respond: ReturnType<typeof vi.fn> } {
   const respond = vi.fn();
   return {
     req: { type: "req", id: "req-1", method: "models.authStatus", params },
     params,
-    client: null,
+    client: { connect: { scopes } } as never,
     isWebchatConnect: () => false,
     respond,
     context: { getRuntimeConfig: mocks.getRuntimeConfig } as unknown,
@@ -337,6 +343,8 @@ function resetAuthStatusMocks(): void {
   });
   mocks.loadProviderUsageSummary.mockResolvedValue(emptyUsageSummary());
   mocks.refreshActiveProviderAuthRuntimeSnapshot.mockResolvedValue(false);
+  mocks.refreshPreparedModelRuntimeSnapshots.mockResolvedValue();
+  mocks.warmCurrentProviderAuthStateOffMainThread.mockResolvedValue();
 }
 
 function firstDeferredAuthScope() {
@@ -603,6 +611,31 @@ describe("models.authStatus", () => {
       email: "owner@example.com",
       lastUsedAt: 42,
     });
+  });
+
+  it("omits profile identity for read-only clients", async () => {
+    setPreparedAuthStore({
+      version: 1,
+      profiles: {
+        "openai:default": {
+          type: "oauth",
+          provider: "openai",
+          access: "access",
+          refresh: "refresh",
+          expires: 1_000_000,
+          email: "owner@example.com",
+          displayName: "Work account",
+        },
+      },
+    });
+    mocks.buildAuthHealthSummary.mockReturnValue(createOpenAiCodexOauthHealthSummary());
+
+    const opts = createOptions({}, ["operator.read"]);
+    await handler(opts);
+
+    const result = firstRespondCall(opts)?.[1] as ModelAuthStatusResult;
+    expect(result.providers[0]?.profiles[0]).not.toHaveProperty("email");
+    expect(result.providers[0]?.profiles[0]).not.toHaveProperty("displayName");
   });
 
   it("projects provider capabilities from the published lifecycle metadata", async () => {
@@ -2101,6 +2134,38 @@ describe("models.authOrderSet", () => {
     ]);
   });
 
+  it("publishes the reordered auth owner before acknowledging success", async () => {
+    let finishPublication: (() => void) | undefined;
+    mocks.refreshPreparedModelRuntimeSnapshots.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPublication = resolve;
+        }),
+    );
+    const opts = createOrderOptions({
+      provider: "openai",
+      profileIds: ["openai:two", "openai:one"],
+    });
+
+    const pending = orderHandler(opts);
+    await waitForFast(() => {
+      expect(mocks.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({
+          catalogMode: "static",
+          allowGatewaySubagentBinding: true,
+          agentIds: new Set(["main"]),
+        }),
+      );
+    });
+    expect(opts.respond).not.toHaveBeenCalled();
+
+    finishPublication?.();
+    await pending;
+
+    expect(firstRespondCall(opts)?.[0]).toBe(true);
+  });
+
   it("clears the stored override with null", async () => {
     const opts = createOrderOptions({ provider: "openai" });
 
@@ -2111,6 +2176,16 @@ describe("models.authOrderSet", () => {
       provider: "openai",
       order: null,
     });
+  });
+
+  it("rejects an incomplete provider profile order without writing", async () => {
+    const opts = createOrderOptions({ provider: "openai", profileIds: ["openai:one"] });
+
+    await orderHandler(opts);
+
+    expect(mocks.setAuthProfileOrder).not.toHaveBeenCalled();
+    expect(firstRespondCall(opts)?.[0]).toBe(false);
+    expect(firstRespondCall(opts)?.[2]?.message).toContain("every available profile");
   });
 
   it("rejects profiles owned by another provider", async () => {
