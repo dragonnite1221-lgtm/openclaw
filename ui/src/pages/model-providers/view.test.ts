@@ -948,6 +948,43 @@ describe("renderModelProviders", () => {
     expect(onProfileOrderChange).not.toHaveBeenCalled();
   });
 
+  it("disables reordering when another card owns part of the auth order", () => {
+    const onProfileOrderChange = vi.fn();
+    const sharedOrder = ["shared:one", "shared:two", "shared:three"];
+    const container = mount(
+      props({
+        cards: [
+          card({
+            id: "route-one",
+            profiles: [
+              { profileId: "shared:one", type: "oauth", status: "ok" },
+              { profileId: "shared:two", type: "oauth", status: "ok" },
+            ],
+            profileProviderIds: {
+              "shared:one": "shared-owner",
+              "shared:two": "shared-owner",
+            },
+            profileOrders: { "shared-owner": sharedOrder },
+          }),
+          card({
+            id: "route-two",
+            profiles: [{ profileId: "shared:three", type: "oauth", status: "ok" }],
+            profileProviderIds: { "shared:three": "shared-owner" },
+            profileOrders: { "shared-owner": sharedOrder },
+          }),
+        ],
+        onProfileOrderChange,
+      }),
+    );
+    const grips = container.querySelectorAll<HTMLButtonElement>(".model-providers__profile-grip");
+
+    expect([...grips].every((grip) => grip.disabled)).toBe(true);
+    expect(grips[0]?.title).toContain("Reset");
+    grips[1]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+
+    expect(onProfileOrderChange).not.toHaveBeenCalled();
+  });
+
   it("disables roster mutations when provider settings are read-only", () => {
     const container = mount(
       props({

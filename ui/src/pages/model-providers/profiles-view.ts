@@ -99,10 +99,7 @@ function movableOrder(
   provider: string,
   drafts: Record<string, string[]>,
 ): string[] {
-  const members = new Set(profilesForProvider(card, provider).map((profile) => profile.profileId));
-  return (drafts[provider] ?? card.profileOrders[provider] ?? []).filter((profileId) =>
-    members.has(profileId),
-  );
+  return drafts[provider] ?? card.profileOrders[provider] ?? [];
 }
 
 function orderedProfiles(card: ModelProviderCard, drafts: Record<string, string[]>) {
