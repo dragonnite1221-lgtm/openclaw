@@ -59,6 +59,7 @@ function renderProfileUsage(profile: ProviderProfile, pending: boolean) {
       Boolean(profile.usage.billing?.length) ||
       Boolean(profile.usage.costHistory) ||
       Boolean(profile.usage.summary) ||
+      Boolean(profile.usage.plan) ||
       Boolean(profile.usage.error);
     return hasDetails
       ? renderProviderUsageDetails(profile.usage)
@@ -365,7 +366,7 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                   <span>${profileMeta(profile)}</span>
                 </span>
                 <span class="model-providers__profile-usage"
-                  >${renderProfileUsage(profile, card.profileUsagePending === true)}</span
+                  >${renderProfileUsage(profile, profile.usageRefreshPending === true)}</span
                 >
                 <span class="model-providers__profile-status">${profileStatus(profile)}</span>
                 <button

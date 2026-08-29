@@ -65,8 +65,6 @@ export type ModelProviderCard = {
   profileOrders: Record<string, string[]>;
   /** Auth owners whose stored priority can be reset. */
   profileOrderStoredProviders: string[];
-  /** Exact-profile usage is still filling the gateway cache. */
-  profileUsagePending?: boolean;
   apiKey?: ModelAuthStatusProvider["apiKey"];
   hasConfigApiKey: boolean;
   modelCount: number;
@@ -74,6 +72,8 @@ export type ModelProviderCard = {
   catalogStatus?: ModelCatalogProviderOutcome["status"];
   /** Live provider-reported usage (quota windows, billing, cost history). */
   usage?: ProviderUsageSnapshot;
+  /** Gateway source that supplied the provider-level usage snapshot. */
+  usageSource?: "auth-status" | "usage-status";
   /** Locally-computed session spend for the requested window. */
   localCost?: ModelProviderLocalCost;
 };
@@ -263,9 +263,6 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     }
     draft.card.displayName = provider.displayName || draft.card.displayName;
     draft.card.profiles.push(...provider.profiles);
-    if (input.authStatus?.usageRefreshPending === true) {
-      draft.card.profileUsagePending = true;
-    }
     if (provider.profiles.length > 0) {
       const authProvider = provider.authProvider || provider.provider;
       for (const profile of provider.profiles) {
@@ -306,6 +303,7 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
         ...(usage.costHistory ? { costHistory: usage.costHistory } : {}),
         ...(usage.error ? { error: usage.error } : {}),
       };
+      draft.card.usageSource = "auth-status";
     }
   }
 
@@ -332,6 +330,7 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     // usage.status snapshots carry cost history and errors that the
     // auth-status embed drops, so they win when both are present.
     draft.card.usage = snapshot;
+    draft.card.usageSource = "usage-status";
     draft.hasUsageSnapshot = true;
   }
 

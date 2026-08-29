@@ -43,13 +43,20 @@ const EMPTY_INPUT = {
 const redactedConfigValue = "[redacted]";
 
 describe("buildModelProviderCards", () => {
-  it("keeps profile usage pending state and provider error details", () => {
+  it("keeps exact-profile usage pending state and provider error details", () => {
     const status = authStatus([
       {
         provider: "openai",
         displayName: "OpenAI",
         status: "ok",
-        profiles: [{ profileId: "p1", type: "oauth", status: "ok" }],
+        profiles: [
+          {
+            profileId: "p1",
+            type: "oauth",
+            status: "ok",
+            usageRefreshPending: true,
+          },
+        ],
         usage: {
           providerId: "openai",
           windows: [],
@@ -57,10 +64,8 @@ describe("buildModelProviderCards", () => {
         },
       },
     ]);
-    status.usageRefreshPending = true;
-
     const result = firstCard(buildModelProviderCards({ ...EMPTY_INPUT, authStatus: status }));
-    expect(result.profileUsagePending).toBe(true);
+    expect(result.profiles[0]?.usageRefreshPending).toBe(true);
     expect(result.usage?.error).toBe("usage failed");
   });
 
@@ -315,6 +320,7 @@ describe("buildModelProviderCards", () => {
     expect(cards).toHaveLength(1);
     expect(firstCard(cards).usage?.windows).toEqual([{ label: "5h", usedPercent: 55 }]);
     expect(firstCard(cards).usage?.costHistory?.periodDays).toBe(30);
+    expect(firstCard(cards).usageSource).toBe("usage-status");
   });
 
   it("attaches local session spend via alias ids and includes cost-only providers", () => {

@@ -637,6 +637,97 @@ describe("renderModelProviders", () => {
     expect(text(provider)).toContain("Session spend · 30d");
   });
 
+  it("keeps provider usage visible for API-key profiles without account snapshots", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            profiles: [{ profileId: "openai:key", type: "api_key", status: "static" }],
+            usage: {
+              provider: "openai",
+              displayName: "OpenAI",
+              windows: [{ label: "Monthly", usedPercent: 25 }],
+              billing: [{ type: "balance", amount: 12, unit: "credits" }],
+            },
+          }),
+        ],
+      }),
+    );
+
+    const metrics = container.querySelector(".model-providers__global-metrics");
+    expect(text(metrics)).toContain("Monthly");
+    expect(text(metrics)).toContain("12 credits");
+  });
+
+  it("keeps API-key usage beside account-specific OAuth usage", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            profiles: [
+              {
+                profileId: "openai:oauth",
+                type: "oauth",
+                status: "ok",
+                usage: {
+                  providerId: "openai",
+                  windows: [{ label: "Weekly", usedPercent: 10 }],
+                },
+              },
+            ],
+            usage: {
+              provider: "openai",
+              displayName: "OpenAI",
+              windows: [{ label: "Monthly API key", usedPercent: 25 }],
+              billing: [{ type: "balance", amount: 12, unit: "credits" }],
+            },
+          }),
+        ],
+      }),
+    );
+
+    expect(text(container.querySelector(".model-providers__profile-usage"))).toContain("Weekly");
+    const metrics = container.querySelector(".model-providers__global-metrics");
+    expect(text(metrics)).toContain("Monthly API key");
+    expect(text(metrics)).toContain("12 credits");
+  });
+
+  it("keeps usage.status data beside OAuth usage without an inference API key", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            apiKey: undefined,
+            usageSource: "usage-status",
+            profiles: [
+              {
+                profileId: "openai:oauth",
+                type: "oauth",
+                status: "ok",
+                usage: {
+                  providerId: "openai",
+                  windows: [{ label: "Weekly account", usedPercent: 10 }],
+                },
+              },
+            ],
+            usage: {
+              provider: "openai",
+              displayName: "OpenAI",
+              windows: [{ label: "Admin organization", usedPercent: 25 }],
+            },
+          }),
+        ],
+      }),
+    );
+
+    expect(text(container.querySelector(".model-providers__profile-usage"))).toContain(
+      "Weekly account",
+    );
+    expect(text(container.querySelector(".model-providers__global-metrics"))).toContain(
+      "Admin organization",
+    );
+  });
+
   it("preserves complete graphemes in custom provider fallback icons", () => {
     const cases = [
       { id: "🧭-proxy", expected: "🧭" },
@@ -939,15 +1030,22 @@ describe("renderModelProviders", () => {
       props({
         cards: [
           card({
-            profileUsagePending: true,
-            profiles: [{ profileId: "openai:first", type: "oauth", status: "ok" }],
+            profiles: [
+              {
+                profileId: "openai:first",
+                type: "oauth",
+                status: "ok",
+                usageRefreshPending: true,
+              },
+              { profileId: "openai:second", type: "oauth", status: "ok" },
+            ],
           }),
         ],
       }),
     );
-    expect(text(pending.querySelector(".model-providers__profile-usage"))).toContain(
-      "Loading live usage",
-    );
+    const pendingUsage = pending.querySelectorAll(".model-providers__profile-usage");
+    expect(text(pendingUsage[0] ?? null)).toContain("Loading live usage");
+    expect(text(pendingUsage[1] ?? null)).toContain("No live usage data reported by this account");
 
     const unsupported = mount(
       props({
@@ -961,6 +1059,25 @@ describe("renderModelProviders", () => {
     expect(text(unsupported.querySelector(".model-providers__profile-usage"))).toContain(
       "No live usage data reported by this account",
     );
+
+    const planOnly = mount(
+      props({
+        cards: [
+          card({
+            profiles: [
+              {
+                profileId: "openai:first",
+                type: "oauth",
+                status: "ok",
+                usage: { providerId: "openai", plan: "Pro", windows: [] },
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(text(planOnly)).toContain("Pro");
+    expect(text(planOnly)).not.toContain("No live usage data reported by this account");
   });
 
   it("reorders profiles from the keyboard even while provider data refreshes", () => {

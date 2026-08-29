@@ -33,7 +33,12 @@ import type {
 } from "./data.ts";
 import { renderDefaultModels } from "./default-models-view.ts";
 import { renderProviderProfiles } from "./profiles-view.ts";
-import { hasVerifiedProvider, renderProviderStatus } from "./view-status.ts";
+import {
+  hasApiKeyCredential,
+  hasProviderCredentials,
+  hasVerifiedProvider,
+  renderProviderStatus,
+} from "./view-status.ts";
 
 export type ModelProviderRowMessage = {
   kind: "success" | "error";
@@ -232,7 +237,12 @@ function renderProviderMetrics(
   costDays: number,
   supplementalLoading: boolean,
 ) {
-  const usage = card.profiles.length === 0 ? card.usage : undefined;
+  const hasProfileUsage = card.profiles.some((profile) => profile.usage !== undefined);
+  const hasIndependentProviderUsage = card.usageSource === "usage-status";
+  const usage =
+    hasProfileUsage && !hasIndependentProviderUsage && !hasApiKeyCredential(card)
+      ? undefined
+      : card.usage;
   const hasLocalCost = Boolean(
     card.localCost && (card.localCost.totalTokens > 0 || card.localCost.totalCost > 0),
   );
@@ -373,7 +383,7 @@ function renderProviderActions(card: ModelProviderCard, props: ModelProvidersVie
   const credentialProviders = card.credentialProviderIds.length
     ? card.credentialProviderIds
     : [card.id];
-  const isConfigured = card.hasConfigApiKey || Boolean(card.apiKey) || card.profiles.length > 0;
+  const isConfigured = hasProviderCredentials(card);
   const canLogout = card.profiles.length === 0 && card.logoutTargets.length > 0;
   const probeBusy = Boolean(props.busy[`probe:${card.id}`]);
   const keyBusy = Boolean(props.busy[`key:${card.id}`]);

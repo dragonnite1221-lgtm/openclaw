@@ -105,6 +105,12 @@
   gap: var(--space-2);
 }
 
+@media (pointer: coarse) {
+  .model-providers__profiles-heading-actions .btn {
+    min-height: 44px;
+  }
+}
+
 .model-providers__profile {
   position: relative;
   display: grid;
