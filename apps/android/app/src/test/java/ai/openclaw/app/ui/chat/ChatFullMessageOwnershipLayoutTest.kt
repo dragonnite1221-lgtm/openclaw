@@ -886,16 +886,11 @@ class ChatFullMessageOwnershipLayoutTest {
       .assertIsEnabled()
       .performClick()
     selectChat(FULL_MESSAGE_SECOND_CHAT)
-    val operatorSession =
-      NodeRuntime::class.java
-        .getDeclaredField("operatorSession")
-        .apply { isAccessible = true }
-        .get(runtime) as GatewaySession
     val writeLock =
       GatewaySession::class.java
         .getDeclaredField("writeLock")
         .apply { isAccessible = true }
-        .get(operatorSession) as Mutex
+        .get(operatorSession()) as Mutex
     val lockOwner = Any()
     val autoAdvance = composeRule.mainClock.autoAdvance
     try {
@@ -1292,6 +1287,12 @@ class ChatFullMessageOwnershipLayoutTest {
 
   private fun currentOwner() = ChatComposerOwner(gateway.endpoint.stableId, "main", runtime.chatSessionKey.value)
 
+  private fun operatorSession(): GatewaySession =
+    NodeRuntime::class.java
+      .getDeclaredField("operatorSession")
+      .apply { isAccessible = true }
+      .get(runtime) as GatewaySession
+
   private fun prepareCurrentRead() =
     checkNotNull(
       runtime.prepareFullMessageRead(currentOwner(), runtime.chatSelectionGeneration.value, runtime.gatewayCatalogRevision.value, runtime.chatMessages.value.single()),
@@ -1354,10 +1355,20 @@ class ChatFullMessageOwnershipLayoutTest {
   private fun replaceConnectionBeforeRecomposition() {
     val oldConnection = gateway.operatorConnection.get()
     val key = runtime.chatSessionKey.value
+    val session = operatorSession()
     runtime.refreshGatewayConnection()
     runBlocking {
       withTimeout(FULL_MESSAGE_READY_TIMEOUT_MS) {
-        gateway.historyReads.first { reads -> reads.any { it.first > oldConnection && it.second == key } }
+        // A server-side read is not proof that the replacement is still current.
+        // Capturing its lease waits for hello publication without advancing Compose.
+        combine(gateway.historyReads, runtime.serverName) { reads, _ ->
+          val lease = session.captureRequestLease(gateway.endpoint.stableId)
+          val connection = gateway.operatorConnection.get()
+          connection > oldConnection &&
+            runtime.serverName.value == "full-message-$connection" &&
+            reads.any { it.first == connection && it.second == key } &&
+            lease?.isCurrent() == true
+        }.first { it }
       }
     }
     assertTrue(gateway.operatorConnection.get() > oldConnection)

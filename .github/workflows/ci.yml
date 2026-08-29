@@ -388,11 +388,29 @@ jobs:
                   self.code = code
 
 
+          def git_lock_files(directory):
+              git_dir = os.path.join(os.path.realpath(directory), ".git")
+              if not os.path.lexists(git_dir):
+                  return set()
+              if not os.path.isdir(git_dir) or os.path.realpath(git_dir) != git_dir:
+                  raise RuntimeError("Checkout Git directory is not physical")
+              def scan_error(error):
+                  raise error
+              locks = set()
+              for root, directories, files in os.walk(git_dir, onerror=scan_error):
+                  directories[:] = [name for name in directories
+                                    if os.path.realpath(os.path.join(root, name)) == os.path.join(root, name)]
+                  locks.update(os.path.join(root, name) for name in files if name.endswith(".lock"))
+              return locks
+
+
           def run_git(directory, *arguments, timeout=None, stdout=None):
               check_cancelled()
+              previous_locks = git_lock_files(directory)
               command = [git, "-C", directory, *arguments]
               job = None
               child = None
+              timed_out = False
               deadline = time.monotonic() + timeout if timeout is not None else None
               try:
                   options = {"stdin": subprocess.DEVNULL, "stdout": stdout}
@@ -416,12 +434,18 @@ jobs:
                       os.set_handle_inheritable(job, False)
                   while child.poll() is None and not cancelled:
                       if deadline is not None and time.monotonic() >= deadline:
+                          timed_out = True
                           raise FetchTimeout()
                       time.sleep(0.05)
               finally:
                   try:
                       if child is not None:
                           drain(child, job)
+                          if timed_out or cancelled or child.returncode:
+                              # Forced termination skips Git's lockfile cleanup. This checkout is exclusive;
+                              # reclaim only newly created locks after tree extinction, never existing locks.
+                              for lock in sorted(git_lock_files(directory) - previous_locks):
+                                  os.unlink(lock)
                   finally:
                       if job is not None:
                           close_handle(job)

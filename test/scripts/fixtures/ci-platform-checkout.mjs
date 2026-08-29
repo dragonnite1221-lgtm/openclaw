@@ -130,10 +130,12 @@ function boundary(name) {
   );
 }
 
-async function until(predicate, label, timeout = 4_000) {
-  const deadline = Date.now() + timeout;
+async function until(predicate, label, timeout) {
+  // The supervisor deadline and lease bound startup. Only cleanup needs a local
+  // deadline; slow readiness must not replace the scenario's injected Git result.
+  const deadline = timeout === undefined ? undefined : Date.now() + timeout;
   while (!predicate()) {
-    if (Date.now() >= deadline) {
+    if (deadline !== undefined && Date.now() >= deadline) {
       throw new Error(`Timed out waiting for ${label}`);
     }
     await delay(10);
@@ -257,12 +259,45 @@ async function command() {
       }
       fs.writeFileSync(path.join(directory, ".previous-checkout"), "owned\n");
     }
+    const gitDir = path.join(directory, ".git");
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.writeFileSync(path.join(gitDir, "preexisting.lock"), "not invocation-owned\n", {
+      flag: "wx",
+    });
+    if (scenario === "pre-existing-lock") {
+      fs.writeFileSync(path.join(gitDir, "shallow.lock"), "not invocation-owned\n", { flag: "wx" });
+    }
+    if (scenario === "recovery") {
+      const sharedCache = path.join(root, "shared-git-cache");
+      fs.mkdirSync(sharedCache, { recursive: true });
+      fs.symlinkSync(sharedCache, path.join(gitDir, "shared-cache"), "junction");
+    }
   } else if (operation === "fetch") {
     const counter = path.join(root, "attempt.json");
     const attempt = fs.existsSync(counter) ? JSON.parse(fs.readFileSync(counter, "utf8")) + 1 : 1;
     boundary(`fetch:${attempt}`);
     publish("attempt.json", attempt);
     record(process.pid, "parent", attempt);
+    const lock = path.join(cwd, ".git/shallow.lock");
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    try {
+      fs.writeFileSync(lock, "fetch-owned\n", { flag: "wx" });
+    } catch (error) {
+      if (error.code !== "EEXIST") {
+        throw error;
+      }
+      fs.writeSync(2, "fixture Git lock exists\n");
+      process.exit(128);
+    }
+    // Normal Git exit rolls back locks; forced termination cannot run that cleanup.
+    process.on("SIGTERM", () => {});
+    process.once("exit", () => fs.unlinkSync(lock));
+    if (scenario === "recovery") {
+      fs.writeFileSync(
+        path.join(cwd, ".git/shared-cache", `${attempt}.lock`),
+        "outside Git ownership\n",
+      );
+    }
     if (options.cancelDuringCleanup) {
       const pid = process.ppid;
       publish("owner.json", { pid, startTime: getProcessStartTime(pid) });
