@@ -320,7 +320,7 @@ describe("buildModelProviderCards", () => {
     expect(cards).toHaveLength(1);
     expect(firstCard(cards).usage?.windows).toEqual([{ label: "5h", usedPercent: 55 }]);
     expect(firstCard(cards).usage?.costHistory?.periodDays).toBe(30);
-    expect(firstCard(cards).usageSource).toBe("usage-status");
+    expect(firstCard(cards).usageIndependent).toBe(true);
   });
 
   it("attaches local session spend via alias ids and includes cost-only providers", () => {

@@ -4814,7 +4814,7 @@ export const en: TranslationMap = {
     modelOne: "1 model",
     modelsAvailable: "{available} of {count} models available",
     globalUsage: "Usage and cost",
-    noStats: "No live usage data reported by this provider.",
+    noStats: "No live usage data reported.",
     localCost: "Session spend · {days}d",
     localCostDetail: "{tokens} tokens · {sessions} sessions",
     saving: "Saving…",
@@ -4839,7 +4839,6 @@ export const en: TranslationMap = {
       resetOrder: "Reset",
       addAccount: "Add account",
       lastUsed: "Last used {time} ago",
-      noUsage: "No live usage data reported by this account.",
       reorder: "Reorder {account}, currently position {position}",
     },
     apiKey: {

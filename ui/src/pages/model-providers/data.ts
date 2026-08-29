@@ -72,8 +72,8 @@ export type ModelProviderCard = {
   catalogStatus?: ModelCatalogProviderOutcome["status"];
   /** Live provider-reported usage (quota windows, billing, cost history). */
   usage?: ProviderUsageSnapshot;
-  /** Gateway source that supplied the provider-level usage snapshot. */
-  usageSource?: "usage-status";
+  /** Provider-level usage that is independent from account snapshots. */
+  usageIndependent?: boolean;
   /** Locally-computed session spend for the requested window. */
   localCost?: ModelProviderLocalCost;
 };
@@ -329,7 +329,7 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     // usage.status snapshots carry cost history and errors that the
     // auth-status embed drops, so they win when both are present.
     draft.card.usage = snapshot;
-    draft.card.usageSource = "usage-status";
+    draft.card.usageIndependent = true;
     draft.hasUsageSnapshot = true;
   }
 
