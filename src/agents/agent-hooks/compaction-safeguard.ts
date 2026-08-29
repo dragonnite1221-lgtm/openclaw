@@ -1276,7 +1276,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       // incorporates context from pruned messages instead of losing it entirely.
       const effectivePreviousSummary = droppedSummary ?? previousSummary;
 
-      let currentInstructions = structuredInstructions;
+      let correctiveInstructions = "";
       const totalAttempts = qualityGuardEnabled ? qualityGuardMaxRetries + 1 : 1;
 
       for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
@@ -1291,7 +1291,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   ...llmSummaryParams,
                   messages: messagesToSummarize,
                   maxChunkTokens,
-                  customInstructions: currentInstructions,
+                  customInstructions: [structuredInstructions, correctiveInstructions]
+                    .filter(Boolean)
+                    .join("\n\n"),
                   previousSummary: effectivePreviousSummary,
                 })
               : buildStructuredFallbackSummary(effectivePreviousSummary);
@@ -1306,7 +1308,11 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               ...llmSummaryParams,
               messages: turnPrefixMessages,
               maxChunkTokens,
-              customInstructions: [TURN_PREFIX_SUMMARIZATION_PROMPT, splitTurnFocus]
+              customInstructions: [
+                TURN_PREFIX_SUMMARIZATION_PROMPT,
+                splitTurnFocus,
+                correctiveInstructions,
+              ]
                 .filter(Boolean)
                 .join("\n\n"),
               previousSummary: undefined,
@@ -1413,9 +1419,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           "Quality check feedback",
           `Previous summary failed quality checks (${reasons}).`,
         );
-        currentInstructions = qualityFeedbackReasons
-          ? `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}\n\n${qualityFeedbackReasons}`
-          : `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}`;
+        correctiveInstructions = qualityFeedbackReasons
+          ? `${qualityFeedbackInstruction}\n${budgetInstruction}\n\n${qualityFeedbackReasons}`
+          : `${qualityFeedbackInstruction}\n${budgetInstruction}`;
       }
 
       throw new Error("Compaction safeguard exhausted summary attempts without a decision.");

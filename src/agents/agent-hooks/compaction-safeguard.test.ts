@@ -3281,6 +3281,8 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const finalSummary = expectCompactionResult(result).summary;
     expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    const retry = requireRecord(mockCallArg(mockSummarizeInStages, 1));
+    expect(retry.customInstructions).toContain("retained_turn_ask_marked_pending");
     expect(finalSummary).toContain(`## Latest user request context\n${JSON.stringify(latestAsk)}`);
     expect(finalSummary).toContain("## Open TODOs\nImplement the repair.");
     expect(finalSummary).toContain("## Pending user asks\nNone.");
