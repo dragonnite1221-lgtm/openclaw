@@ -28,11 +28,7 @@ import {
   type ExecSecurity,
 } from "../infra/exec-approvals.js";
 import { planShellAuthorization } from "../infra/exec-authorization-plan.js";
-import {
-  requestExecHostViaSocket,
-  type ExecHostRequest,
-  type ExecHostResponse,
-} from "../infra/exec-host.js";
+import { requestExecHostViaSocket, type ExecHostRequest } from "../infra/exec-host.js";
 import {
   extractShellWrapperCommand,
   isShellWrapperInvocation,
@@ -96,11 +92,9 @@ type NodeHostPrivateInvokeRuntime = NodeHostInvokeRuntime & {
   workerWorkspace?: NodeWorkerWorkspaceRuntime;
 };
 
-const execHostEnforced =
+const useMacAppExecHost =
+  process.platform === "darwin" &&
   normalizeLowercaseStringOrEmpty(process.env.OPENCLAW_NODE_EXEC_HOST ?? "") === "app";
-const execHostFallbackAllowed =
-  normalizeLowercaseStringOrEmpty(process.env.OPENCLAW_NODE_EXEC_FALLBACK ?? "") !== "0";
-const preferMacAppExecHost = process.platform === "darwin" && execHostEnforced;
 
 type SystemWhichParams = {
   bins: string[];
@@ -472,7 +466,7 @@ async function runViaMacAppExecHost(params: {
   approvals: ExecApprovalsResolved;
   request: ExecHostRequest;
   signal?: AbortSignal;
-}): Promise<ExecHostResponse | null> {
+}): ReturnType<typeof requestExecHostViaSocket> {
   const { approvals, request } = params;
   return await requestExecHostViaSocket({
     socketPath: approvals.socketPath,
@@ -807,7 +801,6 @@ async function dispatchInvoke(
         resolveExecAsk,
         isCmdExeInvocation,
         sanitizeEnv,
-        runViaMacAppExecHost,
         buildExecEventPayload,
       },
     });
@@ -872,7 +865,7 @@ async function dispatchInvoke(
         agentId: normalizeOptionalString(params.agentId),
         defaultSecurity: resolveExecSecurity(undefined),
         defaultAsk: resolveExecAsk(undefined),
-        requireSocket: preferMacAppExecHost,
+        requireSocket: useMacAppExecHost,
       });
       // Omitted caller policy retains the approval-preparation contract. A caller can
       // narrow local policy, but cannot turn a restrictive node into an ordinary launch.
@@ -952,14 +945,12 @@ async function dispatchInvoke(
     params,
     skillBins,
     signal: runtime.signal,
-    execHostEnforced,
-    execHostFallbackAllowed,
     resolveExecSecurity,
     resolveExecAsk,
     isCmdExeInvocation,
     sanitizeEnv,
     runCommand,
-    runViaMacAppExecHost,
+    runViaMacAppExecHost: useMacAppExecHost ? runViaMacAppExecHost : undefined,
     sendNodeEvent,
     buildExecEventPayload,
     sendInvokeResult: async (result) => {
@@ -968,7 +959,6 @@ async function dispatchInvoke(
     sendExecFinishedEvent: async (event) => {
       await sendExecFinishedEvent({ ...event, client });
     },
-    preferMacAppExecHost,
   });
 }
 

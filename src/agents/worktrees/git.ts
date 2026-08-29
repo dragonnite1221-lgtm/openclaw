@@ -5,9 +5,9 @@ import path from "node:path";
 import {
   createGitCommandError,
   executeGitCommand,
-  requireGitCommand,
   requireGitCommandBuffer,
   requireGitCommandRaw,
+  runGitRefMutation,
 } from "../../infra/git-exec.js";
 
 export type GitResult = Awaited<ReturnType<typeof executeGitCommand>>;
@@ -45,7 +45,19 @@ export async function runGit(
     signal?: AbortSignal;
   } = {},
 ): Promise<GitResult> {
-  return await executeGitCommand(cwd, args, { ...options, env: gitEnvironment(options.env) });
+  const env = gitEnvironment(options.env);
+  const run = (gitArgs: string[], baseEnv?: NodeJS.ProcessEnv) =>
+    executeGitCommand(cwd, gitArgs, {
+      ...options,
+      baseEnv,
+      env,
+      input: gitArgs === args ? options.input : undefined,
+    });
+  const mutatesRefs =
+    args[0] === "update-ref" ||
+    (args[0] === "branch" &&
+      args.some((arg) => arg === "-d" || arg === "-D" || arg === "--delete"));
+  return await (mutatesRefs ? runGitRefMutation(cwd, args, run) : run(args));
 }
 
 export function commandError(command: string, result: GitResult): Error {
@@ -57,7 +69,11 @@ export async function requireGit(
   args: string[],
   options: { env?: NodeJS.ProcessEnv; input?: string | Uint8Array; timeoutMs?: number } = {},
 ): Promise<string> {
-  return await requireGitCommand(cwd, args, { ...options, env: gitEnvironment(options.env) });
+  const result = await runGit(cwd, args, options);
+  if (result.code !== 0) {
+    throw commandError(`git ${args.join(" ")}`, result);
+  }
+  return result.stdout.trim();
 }
 
 export async function requireGitRaw(cwd: string, args: string[]): Promise<string> {

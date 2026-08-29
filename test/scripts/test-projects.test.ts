@@ -648,6 +648,7 @@ describe("scripts/test-projects changed-target routing", () => {
       [
         "test/scripts/ci-platform-checkout.test.ts",
         "test/scripts/ci-linux-git.test.ts",
+        "test/scripts/ci-checkout-lifecycle.test.ts",
         "test/scripts/ci-workflow-guards.test.ts",
         "test/scripts/changed-lanes.test.ts",
         "test/scripts/check-workflows.test.ts",
@@ -665,6 +666,17 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/package-acceptance-workflow.test.ts",
         "test/scripts/pr-crabbox-merge-bypass.test.ts",
         "test/scripts/run-additional-boundary-checks.test.ts",
+      ],
+    );
+  });
+
+  it("routes checkout fixture edits to both policy callers and lifecycle boundaries", () => {
+    expectChangedTargets(
+      ["test/scripts/fixtures/ci-platform-checkout.mjs"],
+      [
+        "test/scripts/ci-platform-checkout.test.ts",
+        "test/scripts/ci-linux-git.test.ts",
+        "test/scripts/ci-checkout-lifecycle.test.ts",
       ],
     );
   });

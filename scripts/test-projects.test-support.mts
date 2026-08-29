@@ -2110,8 +2110,11 @@ const pluginSdkEntryOwners = [
 // Keep only genuinely ambiguous paths explicit; conventional discovery owns
 // unambiguous scripts and direct imports without a second inventory.
 const EXACT_TOOLING_TARGETS = new Map<string, string[]>([
-  [".github/workflows/ci.yml", ["ci-platform-checkout", "ci-linux-git"]],
-  ["test/scripts/fixtures/ci-platform-checkout.mjs", ["ci-platform-checkout", "ci-linux-git"]],
+  [".github/workflows/ci.yml", ["ci-platform-checkout", "ci-linux-git", "ci-checkout-lifecycle"]],
+  [
+    "test/scripts/fixtures/ci-platform-checkout.mjs",
+    ["ci-platform-checkout", "ci-linux-git", "ci-checkout-lifecycle"],
+  ],
   [
     ".github/workflows/openclaw-live-and-e2e-checks-reusable.yml",
     [packageAcceptance, workflowGuards, "release-workflow-matrix-plan", installDocker],

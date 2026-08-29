@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { runGitRefMutation } from "../../infra/git-exec.js";
 import { runBestEffortCleanup } from "../../infra/non-fatal-cleanup.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { runCommandBuffered, runCommandWithTimeout } from "../../process/exec.js";
@@ -103,10 +104,13 @@ function parseChangedWorkspaceResult(
 }
 
 async function requireGit(cwd: string, args: string[]): Promise<string> {
-  const result = await runCommandWithTimeout(gitCommand(cwd, args), {
-    timeoutMs: PATCH_TIMEOUT_MS,
-    maxOutputBytes: 1024 * 1024,
-  });
+  const run = (gitArgs: string[], baseEnv?: NodeJS.ProcessEnv) =>
+    runCommandWithTimeout(gitCommand(cwd, gitArgs), {
+      timeoutMs: PATCH_TIMEOUT_MS,
+      maxOutputBytes: 1024 * 1024,
+      baseEnv,
+    });
+  const result = await (args[0] === "update-ref" ? runGitRefMutation(cwd, args, run) : run(args));
   if (result.termination !== "exit" || result.code !== 0) {
     throw new Error((result.stderr || result.stdout || `git ${args[0]} failed`).trim());
   }

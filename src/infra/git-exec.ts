@@ -1,13 +1,37 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
 import { createCommandError } from "../process/command-error.js";
 import type { SpawnResult } from "../process/exec-result.js";
 import { runCommandBuffered, runCommandWithTimeout } from "../process/exec.js";
 
 export const GIT_TIMEOUT_MS = 120_000;
+const gitRefMutations = new KeyedAsyncQueue();
+
+export async function runGitRefMutation<T extends SpawnResult>(
+  cwd: string,
+  args: string[],
+  run: (args: string[], baseEnv: NodeJS.ProcessEnv) => Promise<T>,
+): Promise<T> {
+  // Resolve and mutate under the same environment: Git variables can redirect
+  // either operation away from cwd. The runner also rechecks cancellation at launch.
+  const baseEnv = { ...process.env };
+  const resolved = await run(["rev-parse", "--git-common-dir"], baseEnv);
+  if (resolved.termination !== "exit" || resolved.code !== 0) {
+    return resolved;
+  }
+  const commonDir = await fs.realpath(path.resolve(cwd, resolved.stdout.trim()));
+  const key = process.platform === "win32" ? commonDir.toLowerCase() : commonDir;
+  // Even deleting a loose ref locks shared packed-refs. Queue our writers across
+  // linked worktrees; external Git contention retains its native timeout/error.
+  return await gitRefMutations.enqueue(key, () => run(args, baseEnv));
+}
 
 export async function executeGitCommand(
   cwd: string,
   args: string[],
   options: {
+    baseEnv?: NodeJS.ProcessEnv;
     env?: NodeJS.ProcessEnv;
     input?: string | Uint8Array;
     timeoutMs?: number;
@@ -17,6 +41,7 @@ export async function executeGitCommand(
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const result = await runCommandWithTimeout(["git", "-C", cwd, ...args], {
     timeoutMs,
+    baseEnv: options.baseEnv,
     env: options.env,
     input: options.input,
     signal: options.signal,

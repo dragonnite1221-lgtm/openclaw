@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { SpawnResult } from "../../process/exec.js";
+import { buildNodeWorkspaceFinalFenceCommand } from "./node-workspace-final-fence.js";
 import type { WorkerWorkspaceCommand, WorkerWorkspaceQuiescence } from "./tunnel-contract.js";
 import {
   REMOTE_WORKSPACE_QUIESCE_JS,
@@ -30,21 +31,23 @@ export function createWorkerWorkspaceQuiescence(params: {
       throw new Error("Windows worker workspace quiescence requires a shared host");
     }
     const hostMode = params.sharedHost ? "shared-host" : "dedicated";
-    const run = async (argv: string[]) => {
-      const result = await params.runWorkspaceCommand({ transportRetry: "never", argv });
+    const run = async (command: Pick<WorkerWorkspaceCommand, "argv" | "input" | "timeoutMs">) => {
+      const result = await params.runWorkspaceCommand({ ...command, transportRetry: "never" });
       if (!workerWorkspaceCommandSucceeded(result)) {
         throw workspaceSyncError(result);
       }
       return result;
     };
-    const result = await run([
-      "node",
-      "-e",
-      REMOTE_WORKSPACE_QUIESCE_JS,
-      remoteWorkspaceDir,
-      String(WORKSPACE_QUIESCENCE_TIMEOUT_MS),
-      hostMode,
-    ]);
+    const result = await run({
+      argv: [
+        "node",
+        "-e",
+        REMOTE_WORKSPACE_QUIESCE_JS,
+        remoteWorkspaceDir,
+        String(WORKSPACE_QUIESCENCE_TIMEOUT_MS),
+        hostMode,
+      ],
+    });
     const acknowledgement = /^quiesced ([a-f0-9]{32})$/u.exec(result.stdout.trim());
     if (!acknowledgement) {
       throw new Error("Worker workspace quiescence returned an invalid acknowledgement");
@@ -57,18 +60,34 @@ export function createWorkerWorkspaceQuiescence(params: {
     const abortRenewal = () => renewalAbort.abort(params.ownerSignal.reason);
     params.ownerSignal.addEventListener("abort", abortRenewal, { once: true });
     let renewalQueue = Promise.resolve();
-    const renew = (validationMode: "heartbeat" | "final") => {
+    const renew = (
+      validationMode: "heartbeat" | "final",
+      fence?: Parameters<WorkerWorkspaceQuiescence["assertActive"]>[0],
+    ) => {
+      if (fence && (!params.sharedHost || fence.manifest.workspaceDir !== remoteWorkspaceDir)) {
+        throw new Error("Node workspace final fence does not match its shared-host lease");
+      }
+      const command = fence
+        ? buildNodeWorkspaceFinalFenceCommand({
+            workspaceDir: remoteWorkspaceDir,
+            nonce,
+            leaseTimeoutMs: WORKSPACE_QUIESCENCE_TIMEOUT_MS,
+            fence,
+          })
+        : {
+            argv: [
+              "node",
+              "-e",
+              REMOTE_WORKSPACE_RENEW_QUIESCENCE_JS,
+              remoteWorkspaceDir,
+              nonce,
+              String(WORKSPACE_QUIESCENCE_TIMEOUT_MS),
+              validationMode,
+              hostMode,
+            ],
+          };
       const operation = renewalQueue.then(async () => {
-        const renewedResult = await run([
-          "node",
-          "-e",
-          REMOTE_WORKSPACE_RENEW_QUIESCENCE_JS,
-          remoteWorkspaceDir,
-          nonce,
-          String(WORKSPACE_QUIESCENCE_TIMEOUT_MS),
-          validationMode,
-          hostMode,
-        ]);
+        const renewedResult = await run(command);
         if (renewedResult.stdout.trim() !== `renewed ${nonce}`) {
           throw new Error(
             "Worker workspace quiescence renewal returned an invalid acknowledgement",
@@ -97,7 +116,7 @@ export function createWorkerWorkspaceQuiescence(params: {
       }
     })();
     return {
-      assertActive: async () => {
+      assertActive: async (fence) => {
         if (resumed || renewalAbort.signal.aborted) {
           throw new Error("Worker workspace quiescence was already released");
         }
@@ -106,7 +125,7 @@ export function createWorkerWorkspaceQuiescence(params: {
             cause: renewalFailure,
           });
         }
-        await renew("final");
+        await renew("final", fence);
       },
       resume: async () => {
         if (resumed) {
@@ -117,7 +136,9 @@ export function createWorkerWorkspaceQuiescence(params: {
           renewalAbort.abort();
           await renewalLoop;
           await renewalQueue;
-          await run(["node", "-e", REMOTE_WORKSPACE_RESUME_JS, remoteWorkspaceDir, nonce]);
+          await run({
+            argv: ["node", "-e", REMOTE_WORKSPACE_RESUME_JS, remoteWorkspaceDir, nonce],
+          });
           resumed = true;
         })().catch((error: unknown) => {
           releasePromise = undefined;
