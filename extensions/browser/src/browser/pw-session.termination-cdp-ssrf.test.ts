@@ -49,6 +49,20 @@ vi.mock("ws", () => {
   return { default: MockWebSocket };
 });
 
+vi.mock("./pw-session-cdp-transport.js", async () => {
+  const { chromium: mockedChromium } = await import("playwright-core");
+  return {
+    connectOverCdpTransport: (
+      connectionUrl: string,
+      opts: { timeout: number; headers: Record<string, string> },
+    ) =>
+      mockedChromium.connectOverCDP(connectionUrl, {
+        timeout: opts.timeout,
+        headers: opts.headers,
+      }),
+  };
+});
+
 const connectOverCdpSpy = vi.spyOn(chromium, "connectOverCDP");
 const getChromeWebSocketEndpointSpy = vi.spyOn(chromeModule, "getChromeWebSocketEndpoint");
 

@@ -1,4 +1,4 @@
-// Browser tests cover pinned Playwright CDP transport behavior.
+// Browser tests cover managed Playwright CDP transport behavior.
 import { createServer } from "node:http";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import { chromium } from "playwright-core";
@@ -78,7 +78,110 @@ afterEach(async () => {
   await closePlaywrightBrowserConnection().catch(() => {});
 });
 
-describe("pw-session pinned Playwright transport", () => {
+describe("pw-session Playwright CDP transport", () => {
+  it("releases missing-context worker targets before Playwright receives them", async () => {
+    const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((resolve) => {
+      server.once("listening", () => resolve());
+    });
+    const port = (server.address() as { port: number }).port;
+    const cdpUrl = `ws://127.0.0.1:${port}/devtools/browser/test`;
+    const serverSocket = new Promise<import("ws").WebSocket>((resolve) => {
+      server.on("connection", (socket) => resolve(socket));
+    });
+    const commands: Array<{ id: number; method: string; params?: unknown; sessionId?: string }> =
+      [];
+    server.on("connection", (socket) => {
+      socket.addEventListener("message", (event) => {
+        const command = JSON.parse(
+          webSocketMessageToString(event.data),
+        ) as (typeof commands)[number];
+        commands.push(command);
+        socket.send(JSON.stringify({ id: command.id, result: {} }));
+      });
+    });
+    getChromeWebSocketEndpointSpy.mockResolvedValue({ url: cdpUrl });
+    const browser = makeBrowser("A", "https://example.com");
+    connectOverCdpSpy.mockImplementationOnce((async (transportArg: unknown) => {
+      expect(typeof transportArg).not.toBe("string");
+      const transport = transportArg as import("playwright-core").ConnectOverCDPTransport;
+      const delivered: object[] = [];
+      // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Playwright's ConnectOverCDPTransport contract uses an onmessage property.
+      transport.onmessage = (message) => delivered.push(message);
+      const socket = await serverSocket;
+      const workerTypes = [
+        "worker",
+        "shared_worker",
+        "service_worker",
+        "worklet",
+        "shared_storage_worklet",
+        "auction_worklet",
+      ];
+      for (const [index, type] of workerTypes.entries()) {
+        socket.send(
+          JSON.stringify({
+            method: "Target.attachedToTarget",
+            params: {
+              sessionId: `worker-session-${index}`,
+              targetInfo: { targetId: `worker-target-${index}`, type },
+              waitingForDebugger: true,
+            },
+          }),
+        );
+      }
+      const forwardedTargetInfos = [
+        { type: "page" },
+        { type: "browser" },
+        { type: "other" },
+        { type: "service_worker", browserContextId: "default-context" },
+      ];
+      const forwardedTargets = forwardedTargetInfos.map((targetInfo, index) => ({
+        method: "Target.attachedToTarget",
+        params: {
+          sessionId: `forwarded-session-${index}`,
+          targetInfo: { targetId: `forwarded-target-${index}`, ...targetInfo },
+          waitingForDebugger: true,
+        },
+      }));
+      for (const event of forwardedTargets) {
+        socket.send(JSON.stringify(event));
+      }
+
+      await vi.waitFor(() => {
+        expect(commands).toHaveLength(workerTypes.length * 2);
+      });
+      expect(commands).toEqual(
+        workerTypes.flatMap((_type, index) => [
+          expect.objectContaining({
+            id: expect.any(Number),
+            method: "Runtime.runIfWaitingForDebugger",
+            sessionId: `worker-session-${index}`,
+          }),
+          expect.objectContaining({
+            id: expect.any(Number),
+            method: "Target.detachFromTarget",
+            params: { sessionId: `worker-session-${index}` },
+          }),
+        ]),
+      );
+      await vi.waitFor(() => {
+        expect(delivered).toEqual(forwardedTargets);
+      });
+      transport.close();
+      return browser.browser;
+    }) as never);
+
+    try {
+      await expect(listPagesViaPlaywright({ cdpUrl })).resolves.toEqual([
+        expect.objectContaining({ targetId: "A" }),
+      ]);
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    }
+  });
+
   it("connects guarded Playwright CDP through the pinned WebSocket transport", async () => {
     const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
     await new Promise<void>((resolve) => {

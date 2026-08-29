@@ -16,7 +16,7 @@ import {
 import { getChromeWebSocketEndpoint } from "./chrome.js";
 import { BrowserTabNotFoundError } from "./errors.js";
 import { getPlaywrightCore } from "./playwright-core.runtime.js";
-import { connectOverCdpPinnedTransport } from "./pw-session-cdp-transport.js";
+import { connectOverCdpTransport } from "./pw-session-cdp-transport.js";
 import {
   blockedPageRefsByCdpUrl,
   blockedTargetsByCdpUrl,
@@ -444,8 +444,8 @@ export async function connectBrowser(
           // Keep both loopback bypasses active until the Playwright handshake settles.
           return await withManagedProxyForCdpUrl(connectionUrl, () =>
             withNoProxyForCdpUrl(connectionUrl, async () => {
-              if (lookup) {
-                return await connectOverCdpPinnedTransport(connectionUrl, {
+              if (isWebSocketUrl(connectionUrl)) {
+                return await connectOverCdpTransport(connectionUrl, {
                   timeout,
                   headers,
                   lookup,

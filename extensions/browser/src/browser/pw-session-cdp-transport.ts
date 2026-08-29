@@ -1,4 +1,5 @@
 import type { lookup as dnsLookupCb } from "node:dns";
+import { asOptionalRecord, readStringField } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import type { Browser, ConnectOverCDPTransport } from "playwright-core";
 import WebSocket from "ws";
@@ -6,13 +7,35 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { openCdpWebSocket } from "./cdp.helpers.js";
 import { getPlaywrightCore } from "./playwright-core.runtime.js";
 type CdpSocketLookup = typeof dnsLookupCb;
+// Playwright allocates positive command IDs and reserves -9999 for Browser.close.
+// Keep transport-owned replies below that range so Playwright never consumes them.
+const FIRST_INTERNAL_COMMAND_ID = -10_000;
 
-export async function connectOverCdpPinnedTransport(
+function isWorkerTargetType(type: string): boolean {
+  return (
+    type === "worker" || type.endsWith("_worker") || type === "worklet" || type.endsWith("_worklet")
+  );
+}
+
+function workerSessionWithoutContext(message: Record<string, unknown>): string | undefined {
+  if (readStringField(message, "method") !== "Target.attachedToTarget") {
+    return undefined;
+  }
+  const params = asOptionalRecord(message.params);
+  const targetInfo = asOptionalRecord(params?.targetInfo);
+  const type = readStringField(targetInfo, "type");
+  if (!type || !isWorkerTargetType(type) || readStringField(targetInfo, "browserContextId")) {
+    return undefined;
+  }
+  return readStringField(params, "sessionId");
+}
+
+export async function connectOverCdpTransport(
   connectionUrl: string,
   opts: {
     timeout: number;
     headers: Record<string, string>;
-    lookup: CdpSocketLookup;
+    lookup?: CdpSocketLookup;
   },
 ): Promise<Browser> {
   const ws = openCdpWebSocket(connectionUrl, {
@@ -33,6 +56,7 @@ export async function connectOverCdpPinnedTransport(
     let pendingCloseReason: string | undefined;
     let transportClosed = false;
     let transportCloseScheduled = false;
+    let nextInternalCommandId = FIRST_INTERNAL_COMMAND_ID;
     const notifyTransportClosed = (reason: string) => {
       if (transportClosed) {
         return;
@@ -63,6 +87,26 @@ export async function connectOverCdpPinnedTransport(
         }
       }, 100);
       terminateTimer.unref?.();
+    };
+    const sendInternalCommand = (
+      method: string,
+      params: Record<string, unknown> | undefined,
+      sessionId?: string,
+    ) => {
+      ws.send(
+        JSON.stringify({
+          id: nextInternalCommandId--,
+          method,
+          ...(params ? { params } : {}),
+          sessionId,
+        }),
+      );
+    };
+    const releaseWorkerTarget = (sessionId: string) => {
+      // Playwright pauses attached targets and requires resume before detach.
+      // Release the exact worker session before hiding its unsupported attach event.
+      sendInternalCommand("Runtime.runIfWaitingForDebugger", undefined, sessionId);
+      sendInternalCommand("Target.detachFromTarget", { sessionId });
     };
     const scheduleMessage = (message: object) => {
       setImmediate(() => {
@@ -116,7 +160,20 @@ export async function connectOverCdpPinnedTransport(
     };
     ws.on("message", (raw) => {
       try {
-        const parsed = JSON.parse(rawDataToString(raw)) as object;
+        const parsed = asOptionalRecord(JSON.parse(rawDataToString(raw)));
+        if (!parsed) {
+          closeTransportSocket();
+          return;
+        }
+        const id = parsed.id;
+        if (typeof id === "number" && id <= FIRST_INTERNAL_COMMAND_ID) {
+          return;
+        }
+        const workerSessionId = workerSessionWithoutContext(parsed);
+        if (workerSessionId) {
+          releaseWorkerTarget(workerSessionId);
+          return;
+        }
         scheduleMessage(parsed);
       } catch {
         closeTransportSocket();

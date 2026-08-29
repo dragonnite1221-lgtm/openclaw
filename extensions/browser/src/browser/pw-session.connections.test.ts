@@ -13,6 +13,20 @@ const {
   pwAi,
 } = setupPwSessionConnectionTest();
 
+vi.mock("./pw-session-cdp-transport.js", async () => {
+  const { chromium: mockedChromium } = await import("playwright-core");
+  return {
+    connectOverCdpTransport: (
+      connectionUrl: string,
+      opts: { timeout: number; headers: Record<string, string> },
+    ) =>
+      mockedChromium.connectOverCDP(connectionUrl, {
+        timeout: opts.timeout,
+        headers: opts.headers,
+      }),
+  };
+});
+
 const {
   closePlaywrightBrowserConnection,
   createPageViaPlaywright,
@@ -169,11 +183,13 @@ describe("pw-session connection scoping", () => {
 
   it("registers only the credential-stripped Playwright CDP endpoint", async () => {
     const browser = makeBrowser("A", "https://example.com");
-    const cdpUrl = "wss://browser-user:browser-password@browserless.example/devtools/browser/id";
+    const cdpUrl = new URL("wss://browserless.example/devtools/browser/id");
+    cdpUrl.username = "browser-user";
+    cdpUrl.password = "browser-password";
     connectOverCdpSpy.mockResolvedValue(browser.browser);
     getChromeWebSocketUrlSpy.mockResolvedValue(null);
 
-    await listPagesViaPlaywright({ cdpUrl });
+    await listPagesViaPlaywright({ cdpUrl: cdpUrl.href });
 
     expect(registerManagedProxyBrowserCdpBypassMock).toHaveBeenCalledWith(
       "wss://browserless.example/devtools/browser/id",
@@ -260,10 +276,12 @@ describe("pw-session connection scoping", () => {
   });
 
   it("keeps credentialed HTTP discovery out of Playwright's redirect path", async () => {
-    const cdpUrl = "https://browser-user:browser-password@browserless.example/cdp";
+    const cdpUrl = new URL("https://browserless.example/cdp");
+    cdpUrl.username = "browser-user";
+    cdpUrl.password = "browser-password";
     getChromeWebSocketUrlSpy.mockResolvedValue(null);
 
-    await expect(listPagesViaPlaywright({ cdpUrl })).rejects.toThrow(
+    await expect(listPagesViaPlaywright({ cdpUrl: cdpUrl.href })).rejects.toThrow(
       "Authenticated CDP HTTP endpoint did not expose a usable WebSocket URL.",
     );
 
