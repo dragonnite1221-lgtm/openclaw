@@ -215,6 +215,65 @@ describe("createSessionUpdatePrinter", () => {
     expect(written.join("")).toBe("before2Jafter");
   });
 
+  it("resets pending message-chunk sanitizer state when a statusless tool_call_update interrupts the stream", () => {
+    // A tool_call_update only requires toolCallId (ACP), so status is
+    // frequently absent on progress-only updates. The reset must still
+    // happen -- treating "no status" as "no interruption occurred" would
+    // let a dangling escape sequence reach across a real tool lifecycle
+    // event just because this renderer happens not to print anything for
+    // that particular event shape.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "before[" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-1",
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("before2Jafter");
+  });
+
+  it("does not synthesize an astral character when an ANSI sequence spans the pending-surrogate boundary itself", () => {
+    // The high surrogate is legitimately held pending because it is the
+    // very last code unit of this chunk. But the next chunk does NOT open
+    // with its low surrogate -- it opens with an ANSI escape sequence.
+    // That escape sequence must not be allowed to get stripped and leave
+    // the pending high surrogate newly adjacent to a low surrogate that
+    // arrives after it: they were never adjacent in the raw stream, and
+    // synthesizing a character from them would fabricate content the
+    // server never actually sent.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `[2J${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
   it("strips dangerous bidi override characters", () => {
     // U+202E (right-to-left override) is the classic "Trojan Source"-style
     // vector for making displayed text visually reorder away from its

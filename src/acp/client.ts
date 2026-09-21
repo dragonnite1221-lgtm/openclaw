@@ -143,13 +143,27 @@ function createAcpChatTextSanitizer(): ((text: string) => string) & { reset: () 
   const ansiStripper = new AnsiSequenceStripper();
   let pendingHighSurrogate = "";
   const sanitize = (rawText: string) => {
-    // Surrogate-pair adjacency must be judged on the RAW stream, before any
-    // ANSI stripping runs: if an escape sequence sat between a high
-    // surrogate and what looks like its low surrogate in a later chunk,
-    // they were never actually adjacent in the original data, and combining
-    // them after stripping would synthesize a character that never existed.
-    const withPending = pendingHighSurrogate + rawText;
-    pendingHighSurrogate = "";
+    // A high surrogate held from the previous chunk is only genuinely part
+    // of a split character if THIS chunk's very first code unit is its
+    // matching low surrogate. That check must happen against the raw
+    // rawText -- before it gets combined into a buffer that ANSI stripping
+    // will run over -- because an escape sequence sitting between them
+    // would otherwise get removed and leave a previously-nonadjacent
+    // surrogate pair newly adjacent, letting the surrogate-stripping step
+    // below mistake it for a real character and preserve it. If the
+    // pending surrogate isn't immediately followed by its match, it's
+    // proven lone right now and dropped rather than reintroduced into text
+    // that could later make it falsely adjacent to an unrelated surrogate.
+    let withPending = rawText;
+    if (pendingHighSurrogate) {
+      const firstCode = rawText.codePointAt(0);
+      const isMatchingLowSurrogate =
+        firstCode !== undefined && firstCode >= 0xdc00 && firstCode <= 0xdfff;
+      if (isMatchingLowSurrogate) {
+        withPending = pendingHighSurrogate + rawText;
+      }
+      pendingHighSurrogate = "";
+    }
     // A high surrogate at the very end of this buffer might be the first
     // half of an astral character (e.g. an emoji) split across two
     // notification chunks -- hold it back instead of treating it as an
@@ -244,8 +258,12 @@ export function createSessionUpdatePrinter(
         return;
       }
       case "tool_call_update": {
+        // ACP only requires toolCallId on this event -- status is commonly
+        // absent on progress-only updates. Reset unconditionally: this is
+        // still a real tool lifecycle event interrupting the message-chunk
+        // stream even when this renderer has nothing to print for it.
+        sanitizeStream.reset();
         if (update.status) {
-          sanitizeStream.reset();
           log(
             `[tool update] ${sanitizeTerminalText(update.toolCallId)}: ${sanitizeTerminalText(update.status)}`,
           );
