@@ -1147,6 +1147,37 @@ describe("createSessionUpdatePrinter", () => {
     expect(written.join("")).toBe("line one\nline two");
   });
 
+  it("preserves emoji ZWJ sequences and other legitimate format characters", () => {
+    // A blanket Unicode Format-category strip (as shell output sanitization
+    // uses) would split this into two separate emoji by removing the U+200D
+    // zero-width joiner that combines them into one composed glyph.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const womanTechnologist = "\u{1F469}‍\u{1F4BB}";
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `hello ${womanTechnologist} world` },
+      }),
+    );
+    expect(written.join("")).toBe(`hello ${womanTechnologist} world`);
+  });
+
+  it("strips dangerous bidi override characters", () => {
+    // U+202E (right-to-left override) is the classic "Trojan Source"-style
+    // vector for making displayed text visually reorder away from its
+    // actual byte order.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "safe‮reversed" },
+      }),
+    );
+    expect(written.join("")).toBe("safereversed");
+  });
+
   it("strips a control sequence deliberately split across two chunks", () => {
     // A malicious or buggy server could send the escape introducer in one
     // notification and the rest of the sequence in the next, hoping a

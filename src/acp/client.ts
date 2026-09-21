@@ -14,8 +14,8 @@ import {
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { AnsiSequenceStripper } from "../../packages/terminal-core/src/ansi-sequences.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
-import { createStreamingBinaryOutputSanitizer } from "../agents/shell-utils.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { killProcessTree, signalProcessTree } from "../process/kill-tree.js";
 import {
@@ -123,38 +123,86 @@ type SessionUpdatePrinterDeps = {
   log?: (line: string) => void;
 };
 
+// U+202A-U+202E (embeddings/overrides) and U+2066-U+2069 (isolates): the
+// bidi controls capable of reordering how SUBSEQUENT text visually renders
+// regardless of byte order (the "Trojan Source"-style spoofing vector).
+// Deliberately narrower than the full Unicode Format category: chat text
+// legitimately uses ZWJ/ZWNJ (U+200D/U+200C) for emoji sequences and
+// complex script shaping, and simple direction marks (U+200E/U+200F) for
+// ordinary mixed-direction prose, none of which reorder anything beyond
+// themselves.
+const ACP_DANGEROUS_BIDI_CONTROL_PATTERN = /[‪-‮⁦-⁩]/g;
+
+/**
+ * Sanitizes one connection's untrusted agent_message_chunk text: ANSI/C1
+ * escape sequences via a stateful AnsiSequenceStripper (state carried across
+ * calls, so a sequence split across two notification chunks still gets
+ * caught), then per-character handling for whatever isn't part of a
+ * recognized escape sequence. Unlike shell-utils.ts's
+ * createStreamingBinaryOutputSanitizer (built for process output, where
+ * \r is a legitimate progress-bar character and stripping the whole Unicode
+ * Format category is harmless), this keeps real newlines and format
+ * characters intact and only removes \r and the specific dangerous bidi
+ * controls above.
+ */
+function createAcpChatTextSanitizer(): (text: string) => string {
+  const ansiStripper = new AnsiSequenceStripper();
+  return (text: string) => {
+    const withoutAnsi = ansiStripper.write(text);
+    const withoutBidiOverrides = withoutAnsi.replace(ACP_DANGEROUS_BIDI_CONTROL_PATTERN, "");
+    const withoutLoneSurrogates = withoutBidiOverrides.replace(/\p{Surrogate}/gu, "");
+    if (!withoutLoneSurrogates) {
+      return withoutLoneSurrogates;
+    }
+    const chunks: string[] = [];
+    for (const char of withoutLoneSurrogates) {
+      const code = char.codePointAt(0);
+      if (code == null) {
+        continue;
+      }
+      if (code === 0x0a || code === 0x09) {
+        chunks.push(char);
+        continue;
+      }
+      if (code === 0x0d) {
+        // No legitimate use in chat prose; a bare \r left in place would
+        // let a server overwrite the start of the current terminal line.
+        continue;
+      }
+      if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
+        chunks.push(`\\x${code.toString(16).padStart(2, "0")}`);
+        continue;
+      }
+      chunks.push(char);
+    }
+    return chunks.join("");
+  };
+}
+
 /**
  * A remote ACP server's notifications are untrusted input: without
  * sanitization, a tool title, status, or streamed message chunk containing
  * terminal control sequences (screen clear, cursor movement) could overwrite
  * or hide what's already on screen. Multi-line message text keeps real
- * newlines via a stateful, cross-chunk-safe ANSI/control-char sanitizer (one
- * per connection, so a sequence deliberately split across chunk boundaries
- * still gets caught); single-line fields (titles, ids, status, command
- * names) go through sanitizeTerminalText, which escapes newlines instead of
- * printing them since those fields are never meant to span lines.
+ * newlines (and legitimate format characters like emoji ZWJ sequences) via
+ * a stateful, cross-chunk-safe sanitizer (one per connection, so a sequence
+ * deliberately split across chunk boundaries still gets caught); single-line
+ * fields (titles, ids, status, command names) go through sanitizeTerminalText,
+ * which escapes newlines instead of printing them since those fields are
+ * never meant to span lines.
  */
 export function createSessionUpdatePrinter(
   deps: SessionUpdatePrinterDeps = {},
 ): (notification: SessionNotification) => void {
   const write = deps.write ?? ((text: string) => process.stdout.write(text));
   const log = deps.log ?? ((line: string) => console.log(line));
-  const sanitizeStream = createStreamingBinaryOutputSanitizer();
+  const sanitizeStream = createAcpChatTextSanitizer();
   return function printSessionUpdate(notification: SessionNotification): void {
     const update = notification.update;
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
         if (update.content?.type === "text") {
-          // createStreamingBinaryOutputSanitizer deliberately keeps bare \r,
-          // since its other caller (shell output) needs it for legitimate
-          // carriage-return progress bars. A chat message has no equivalent
-          // legitimate use, and an ACP server could otherwise send text like
-          // "safe\rspoofed" to overwrite the start of the current line, so
-          // \r is dropped here after ANSI/control stripping. This is safe to
-          // apply per chunk independently of where \r\n might be split
-          // across chunk boundaries: each half still resolves to the same
-          // final text (the \r removed, the \n kept) regardless of order.
-          write(sanitizeStream(update.content.text).replace(/\r/g, ""));
+          write(sanitizeStream(update.content.text));
         }
         return;
       }
