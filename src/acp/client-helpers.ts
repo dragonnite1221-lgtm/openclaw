@@ -5,7 +5,7 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import { sanitizeStrictSingleLineText } from "../../packages/terminal-core/src/safe-text.js";
 import {
   materializeWindowsSpawnProgram,
   resolveWindowsSpawnProgram,
@@ -111,7 +111,7 @@ export async function resolvePermissionRequest(
   const prompt = deps.prompt ?? promptUserPermission;
   const cwd = deps.cwd ?? process.cwd();
   const options = params.options ?? [];
-  const toolTitle = sanitizeTerminalText(params.toolCall?.title ?? "tool");
+  const toolTitle = sanitizeStrictSingleLineText(params.toolCall?.title ?? "tool");
   const classification = classifyAcpToolApproval({ toolCall: params.toolCall, cwd });
   const toolName = classification.toolName;
   const toolKind = resolveToolKindForPermission(toolName, classification.approvalClass);

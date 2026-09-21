@@ -351,4 +351,77 @@ describe("createSessionUpdatePrinter", () => {
     );
     expect(lines).toEqual(["\n[commands] /help /status"]);
   });
+
+  it("does not synthesize an astral character from a surrogate and an unrelated escape sequence within one chunk", () => {
+    // Same fabrication risk as the cross-chunk case, but entirely within a
+    // single notification: the high surrogate and low surrogate are only
+    // adjacent in the ANSI-stripped result, never in the raw text the
+    // server actually sent.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${highSurrogate}[2J${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
+  it("keeps a pending surrogate alive across an intervening empty chunk", () => {
+    // ACP permits an empty text string. A high surrogate held pending from
+    // the previous chunk must survive an empty chunk in between rather
+    // than being dropped just because there was nothing to check it
+    // against yet.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe(`before${grinningFace}after`);
+  });
+
+  it("resets pending sanitizer state when messageId changes, even without an intervening tool event", () => {
+    // ACP defines a changed messageId as a new message starting. A
+    // dangling escape sequence from one message must not reach into the
+    // next just because nothing else happened to interrupt the stream.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: "before[" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-2",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("before2Jafter");
+  });
 });

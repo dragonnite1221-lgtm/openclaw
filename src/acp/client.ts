@@ -17,7 +17,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { AnsiSequenceStripper } from "../../packages/terminal-core/src/ansi-sequences.js";
 import {
   DANGEROUS_BIDI_CONTROL_PATTERN,
-  sanitizeTerminalText,
+  sanitizeStrictSingleLineText,
 } from "../../packages/terminal-core/src/safe-text.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { killProcessTree, signalProcessTree } from "../process/kill-tree.js";
@@ -127,6 +127,57 @@ type SessionUpdatePrinterDeps = {
   log?: (line: string) => void;
 };
 
+// A high surrogate is only genuinely part of a split character if it is
+// IMMEDIATELY followed, in the raw stream, by its matching low surrogate.
+// This must be checked with plain UTF-16 code units (charCodeAt), not
+// codePointAt, which would silently auto-combine an already-valid pair and
+// defeat the manual pairing check below.
+function isHighSurrogateUnit(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
+}
+function isLowSurrogateUnit(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff;
+}
+
+/**
+ * Walks raw text one UTF-16 code unit at a time and keeps only surrogates
+ * that are genuinely adjacent to their pair IN THE RAW INPUT, dropping any
+ * lone surrogate immediately (except one trailing at the very end, which
+ * might complete across the next chunk and is returned as `pending`).
+ *
+ * This must run BEFORE any transformation that removes characters (ANSI
+ * stripping, bidi stripping): if it ran after, removing an escape sequence
+ * or bidi control that separated a high surrogate from an unrelated low
+ * surrogate would leave them newly adjacent, and a downstream check that
+ * only looks at the (already-stripped) result would mistake them for one
+ * real character the server never actually sent.
+ */
+function stripUnpairedSurrogates(text: string): { validated: string; pending: string } {
+  let validated = "";
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (isHighSurrogateUnit(unit)) {
+      const nextUnit = i + 1 < text.length ? text.charCodeAt(i + 1) : undefined;
+      if (nextUnit !== undefined && isLowSurrogateUnit(nextUnit)) {
+        validated += text.charAt(i) + text.charAt(i + 1);
+        i++;
+        continue;
+      }
+      if (i === text.length - 1) {
+        // Might be the first half of a character split across the next
+        // chunk boundary -- hold it rather than treating it as lone yet.
+        return { validated, pending: text.charAt(i) };
+      }
+      continue; // not at the end and not followed by its match: provably lone
+    }
+    if (isLowSurrogateUnit(unit)) {
+      continue; // any real pair was already consumed by the branch above
+    }
+    validated += text.charAt(i);
+  }
+  return { validated, pending: "" };
+}
+
 /**
  * Sanitizes one connection's untrusted agent_message_chunk text: ANSI/C1
  * escape sequences via a stateful AnsiSequenceStripper (state carried across
@@ -139,56 +190,43 @@ type SessionUpdatePrinterDeps = {
  * characters intact and only removes \r and the shared dangerous-bidi
  * pattern (see safe-text.ts).
  */
-function createAcpChatTextSanitizer(): ((text: string) => string) & { reset: () => void } {
+function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null) => string) & {
+  reset: () => void;
+} {
   const ansiStripper = new AnsiSequenceStripper();
   let pendingHighSurrogate = "";
-  const sanitize = (rawText: string) => {
-    // A high surrogate held from the previous chunk is only genuinely part
-    // of a split character if THIS chunk's very first code unit is its
-    // matching low surrogate. That check must happen against the raw
-    // rawText -- before it gets combined into a buffer that ANSI stripping
-    // will run over -- because an escape sequence sitting between them
-    // would otherwise get removed and leave a previously-nonadjacent
-    // surrogate pair newly adjacent, letting the surrogate-stripping step
-    // below mistake it for a real character and preserve it. If the
-    // pending surrogate isn't immediately followed by its match, it's
-    // proven lone right now and dropped rather than reintroduced into text
-    // that could later make it falsely adjacent to an unrelated surrogate.
-    let withPending = rawText;
-    if (pendingHighSurrogate) {
-      const firstCode = rawText.codePointAt(0);
-      const isMatchingLowSurrogate =
-        firstCode !== undefined && firstCode >= 0xdc00 && firstCode <= 0xdfff;
-      if (isMatchingLowSurrogate) {
-        withPending = pendingHighSurrogate + rawText;
-      }
-      pendingHighSurrogate = "";
+  let lastMessageId: string | undefined;
+  const doReset = () => {
+    ansiStripper.finish();
+    pendingHighSurrogate = "";
+  };
+  const sanitize = (rawText: string, messageId?: string | null) => {
+    // ACP defines a changed messageId as a new message starting -- reset
+    // first so a dangling escape sequence or surrogate half from a
+    // previous message can't bleed into this one. Only compares two
+    // concrete ids: many backends never populate messageId at all, and
+    // that absence carries no signal either way.
+    if (messageId != null && lastMessageId !== undefined && messageId !== lastMessageId) {
+      doReset();
     }
-    // A high surrogate at the very end of this buffer might be the first
-    // half of an astral character (e.g. an emoji) split across two
-    // notification chunks -- hold it back instead of treating it as an
-    // invalid lone surrogate yet. It's proven genuinely unpaired only once
-    // a later chunk's leading code unit turns out not to be its matching
-    // low surrogate, in which case the surrogate-stripping step below
-    // removes it as usual; if the stream simply ends first, it never gets
-    // flushed, which is harmless. codePointAt at the last index can only
-    // return a raw (unpaired) surrogate value here, since there is no
-    // following code unit within this buffer to combine it with.
-    const lastCode = withPending.codePointAt(withPending.length - 1);
-    const endsWithUnpairedHighSurrogate =
-      lastCode !== undefined && lastCode >= 0xd800 && lastCode <= 0xdbff;
-    const toProcess = endsWithUnpairedHighSurrogate ? withPending.slice(0, -1) : withPending;
-    if (endsWithUnpairedHighSurrogate) {
-      pendingHighSurrogate = withPending.slice(-1);
+    if (messageId != null) {
+      lastMessageId = messageId;
     }
-    const withoutAnsi = ansiStripper.write(toProcess);
+
+    // See stripUnpairedSurrogates: pending is prepended unconditionally
+    // and re-validated from scratch, since a surrogate held from the
+    // previous chunk is just as subject to this chunk's own raw adjacency
+    // check as any surrogate that arrives fresh.
+    const { validated, pending } = stripUnpairedSurrogates(pendingHighSurrogate + rawText);
+    pendingHighSurrogate = pending;
+
+    const withoutAnsi = ansiStripper.write(validated);
     const withoutBidiOverrides = withoutAnsi.replace(DANGEROUS_BIDI_CONTROL_PATTERN, "");
-    const withoutLoneSurrogates = withoutBidiOverrides.replace(/\p{Surrogate}/gu, "");
-    if (!withoutLoneSurrogates) {
-      return withoutLoneSurrogates;
+    if (!withoutBidiOverrides) {
+      return withoutBidiOverrides;
     }
     const chunks: string[] = [];
-    for (const char of withoutLoneSurrogates) {
+    for (const char of withoutBidiOverrides) {
       const code = char.codePointAt(0);
       if (code == null) {
         continue;
@@ -212,8 +250,8 @@ function createAcpChatTextSanitizer(): ((text: string) => string) & { reset: () 
   };
   return Object.assign(sanitize, {
     reset: () => {
-      ansiStripper.finish();
-      pendingHighSurrogate = "";
+      doReset();
+      lastMessageId = undefined;
     },
   });
 }
@@ -226,9 +264,9 @@ function createAcpChatTextSanitizer(): ((text: string) => string) & { reset: () 
  * newlines (and legitimate format characters like emoji ZWJ sequences) via
  * a stateful, cross-chunk-safe sanitizer (one per connection, so a sequence
  * deliberately split across chunk boundaries still gets caught); single-line
- * fields (titles, ids, status, command names) go through sanitizeTerminalText,
- * which escapes newlines instead of printing them since those fields are
- * never meant to span lines.
+ * fields (titles, ids, status, command names) go through
+ * sanitizeStrictSingleLineText, which escapes newlines instead of printing
+ * them since those fields are never meant to span lines.
  */
 export function createSessionUpdatePrinter(
   deps: SessionUpdatePrinterDeps = {},
@@ -241,7 +279,7 @@ export function createSessionUpdatePrinter(
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
         if (update.content?.type === "text") {
-          write(sanitizeStream(update.content.text));
+          write(sanitizeStream(update.content.text, update.messageId));
         }
         return;
       }
@@ -253,7 +291,7 @@ export function createSessionUpdatePrinter(
         // text belonging to a new, unrelated chunk.
         sanitizeStream.reset();
         log(
-          `\n[tool] ${sanitizeTerminalText(update.title)} (${sanitizeTerminalText(update.status ?? "unknown")})`,
+          `\n[tool] ${sanitizeStrictSingleLineText(update.title)} (${sanitizeStrictSingleLineText(update.status ?? "unknown")})`,
         );
         return;
       }
@@ -265,14 +303,14 @@ export function createSessionUpdatePrinter(
         sanitizeStream.reset();
         if (update.status) {
           log(
-            `[tool update] ${sanitizeTerminalText(update.toolCallId)}: ${sanitizeTerminalText(update.status)}`,
+            `[tool update] ${sanitizeStrictSingleLineText(update.toolCallId)}: ${sanitizeStrictSingleLineText(update.status)}`,
           );
         }
         return;
       }
       case "available_commands_update": {
         const names = update.availableCommands
-          ?.map((cmd) => `/${sanitizeTerminalText(cmd.name)}`)
+          ?.map((cmd) => `/${sanitizeStrictSingleLineText(cmd.name)}`)
           .join(" ");
         if (names) {
           sanitizeStream.reset();

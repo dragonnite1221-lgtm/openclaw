@@ -1,6 +1,10 @@
 // Terminal Core tests cover safe text behavior.
 import { describe, expect, it } from "vitest";
-import { hasTerminalControl, sanitizeTerminalText } from "./safe-text.js";
+import {
+  hasTerminalControl,
+  sanitizeStrictSingleLineText,
+  sanitizeTerminalText,
+} from "./safe-text.js";
 
 describe("hasTerminalControl", () => {
   it.each([
@@ -40,23 +44,45 @@ describe("sanitizeTerminalText", () => {
     expect(sanitizeTerminalText("safe‮reversed")).toBe("safereversed");
   });
 
+  it("preserves simple direction marks and joiners", () => {
+    // sanitizeTerminalText is shared by callers that render arbitrary
+    // prose (CLI messages, transcript utterances), so it keeps only the
+    // override/isolate subset -- ZWJ/ZWNJ (needed for emoji sequences and
+    // script shaping) and simple LRM/RLM marks (needed for ordinary
+    // mixed-direction text) are left alone since neither reorders anything
+    // beyond itself. See sanitizeStrictSingleLineText for callers that
+    // need the full Bidi_Control set stripped.
+    expect(sanitizeTerminalText("a‍b")).toBe("a‍b");
+    expect(sanitizeTerminalText("a‎b")).toBe("a‎b");
+  });
+});
+
+describe("sanitizeStrictSingleLineText", () => {
+  it("strips cursor and erase ANSI sequences", () => {
+    expect(sanitizeStrictSingleLineText("[2K[1Arewritten")).toBe("rewritten");
+  });
+
+  it("strips dangerous bidi override characters", () => {
+    expect(sanitizeStrictSingleLineText("safe‮reversed")).toBe("safereversed");
+  });
+
   it("preserves joiners needed for emoji sequences and script shaping", () => {
     // ZWJ/ZWNJ are Join_Control, not Bidi_Control -- they can't reorder
-    // anything and are needed to keep composed emoji and complex scripts
-    // intact even in a single-line field.
-    expect(sanitizeTerminalText("a‍b")).toBe("a‍b");
+    // anything and are needed to keep composed emoji intact even here.
+    expect(sanitizeStrictSingleLineText("a‍b")).toBe("a‍b");
   });
 
   it("strips the full Bidi_Control set, not just the override/isolate subset", () => {
-    // sanitizeTerminalText is used for short, security-sensitive
-    // single-line fields (permission titles, tool names) where there is no
+    // This function is used for short, security-sensitive single-line
+    // fields (ACP permission-prompt titles, tool names) where there is no
     // legitimate need for any directional mark, and the stakes of a
-    // spoofed rendering are high. Unlike the narrower pattern applied to
-    // long-form streamed chat text, every control in Unicode's official
-    // Bidi_Control property is removed here: LRM, RLM, ALM, plus the
-    // stronger embedding/override and isolate controls.
-    expect(sanitizeTerminalText("a‎b")).toBe("ab"); // LRM
-    expect(sanitizeTerminalText("a‏b")).toBe("ab"); // RLM
-    expect(sanitizeTerminalText("a؜b")).toBe("ab"); // ALM
+    // spoofed rendering are high. Unlike sanitizeTerminalText's narrower
+    // pattern (needed to avoid corrupting arbitrary rendered prose), every
+    // control in Unicode's official Bidi_Control property is removed here:
+    // LRM, RLM, ALM, plus the stronger embedding/override and isolate
+    // controls.
+    expect(sanitizeStrictSingleLineText("a‎b")).toBe("ab"); // LRM
+    expect(sanitizeStrictSingleLineText("a‏b")).toBe("ab"); // RLM
+    expect(sanitizeStrictSingleLineText("a؜b")).toBe("ab"); // ALM
   });
 });

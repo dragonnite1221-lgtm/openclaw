@@ -22,25 +22,24 @@ export function hasTerminalControl(input: string): boolean {
 // text uses ZWJ/ZWNJ (U+200D/U+200C) for emoji sequences and complex script
 // shaping, and simple direction marks (U+200E/U+200F) for ordinary
 // mixed-direction prose, none of which reorder anything beyond themselves.
-// Used for long-form streamed chat text, where stripping LRM/RLM/ALM would
-// break legitimate mixed-direction prose.
+// This is sanitizeTerminalText's pattern: that function is shared by many
+// callers that render arbitrary prose (CLI messages, transcript utterances),
+// where stripping LRM/RLM/ALM would corrupt legitimate mixed-direction text.
 export const DANGEROUS_BIDI_CONTROL_PATTERN = /[‪-‮⁦-⁩]/g;
 
-// The full Unicode Bidi_Control property: the two above PLUS U+061C (ALM),
-// U+200E (LRM), and U+200F (RLM). Those three are individually weaker --
-// they influence only adjacent characters rather than reordering a whole
-// span -- but sanitizeTerminalText's callers are short, security-sensitive
-// single-line fields (permission-request titles, tool names) with no
-// legitimate use for any directional mark, so the full set is stripped
-// here even though the streaming chat-text sanitizer keeps them.
+// The full Unicode Bidi_Control property: the pattern above PLUS U+061C
+// (ALM), U+200E (LRM), and U+200F (RLM). Those three are individually
+// weaker -- they influence only adjacent characters rather than reordering
+// a whole span -- but sanitizeStrictSingleLineText's callers are short,
+// security-sensitive single-line fields (ACP permission-prompt titles, tool
+// names) with no legitimate use for any directional mark, so the full set
+// is stripped there even though sanitizeTerminalText's much broader set of
+// callers need the narrower pattern to avoid corrupting real prose.
 const STRICT_BIDI_CONTROL_PATTERN = /[؜‎‏‪-‮⁦-⁩]/g;
 
-/**
- * Normalize untrusted text for single-line terminal/log rendering.
- */
-export function sanitizeTerminalText(input: string): string {
+function sanitizeSingleLineText(input: string, bidiPattern: RegExp): string {
   const normalized = stripAnsi(input)
-    .replace(STRICT_BIDI_CONTROL_PATTERN, "")
+    .replace(bidiPattern, "")
     .replace(/\r/g, "\\r")
     .replace(/\n/g, "\\n")
     .replace(/\t/g, "\\t");
@@ -51,4 +50,26 @@ export function sanitizeTerminalText(input: string): string {
     }
   }
   return sanitized;
+}
+
+/**
+ * Normalize untrusted text for single-line terminal/log rendering. Shared
+ * by many call sites, including ones that render arbitrary user-facing
+ * prose -- keeps the narrower override/isolate bidi pattern so legitimate
+ * mixed-direction text isn't corrupted. See sanitizeStrictSingleLineText
+ * for short, security-sensitive fields that need the stricter pattern.
+ */
+export function sanitizeTerminalText(input: string): string {
+  return sanitizeSingleLineText(input, DANGEROUS_BIDI_CONTROL_PATTERN);
+}
+
+/**
+ * Stricter variant of sanitizeTerminalText for short, security-sensitive
+ * single-line fields (ACP permission-prompt titles, tool names) where
+ * there is no legitimate need for any directional mark and the stakes of a
+ * spoofed rendering are high. Must NOT be used for rendering arbitrary
+ * prose -- use sanitizeTerminalText there instead.
+ */
+export function sanitizeStrictSingleLineText(input: string): string {
+  return sanitizeSingleLineText(input, STRICT_BIDI_CONTROL_PATTERN);
 }
