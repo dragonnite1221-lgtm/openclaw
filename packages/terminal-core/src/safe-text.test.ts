@@ -32,4 +32,20 @@ describe("sanitizeTerminalText", () => {
   it("escapes line controls while preserving printable text", () => {
     expect(sanitizeTerminalText("a\tb\nc\rd")).toBe("a\\tb\\nc\\rd");
   });
+
+  it("strips dangerous bidi override characters", () => {
+    // U+202E (right-to-left override) is the classic "Trojan Source"-style
+    // vector for making displayed text visually reorder away from its
+    // actual byte order.
+    expect(sanitizeTerminalText("safe‮reversed")).toBe("safereversed");
+  });
+
+  it("preserves simple direction marks and joiners", () => {
+    // Unlike the full Unicode Format category, only the specific
+    // override/isolate controls are removed -- ZWJ/ZWNJ (needed for emoji
+    // sequences and script shaping) and simple LRM/RLM marks are left
+    // alone since neither reorders anything beyond itself.
+    expect(sanitizeTerminalText("a‍b")).toBe("a‍b");
+    expect(sanitizeTerminalText("a‎b")).toBe("a‎b");
+  });
 });

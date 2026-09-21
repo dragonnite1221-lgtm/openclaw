@@ -15,7 +15,10 @@ import {
 } from "@agentclientprotocol/sdk";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { AnsiSequenceStripper } from "../../packages/terminal-core/src/ansi-sequences.js";
-import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import {
+  DANGEROUS_BIDI_CONTROL_PATTERN,
+  sanitizeTerminalText,
+} from "../../packages/terminal-core/src/safe-text.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { killProcessTree, signalProcessTree } from "../process/kill-tree.js";
 import {
@@ -38,6 +41,7 @@ type AcpClientHandle = {
   client: ClientSideConnection;
   agent: ChildProcess;
   sessionId: string;
+  resetSessionUpdatePrinter: () => void;
 };
 
 const ACP_SERVER_KILL_GRACE_MS = 1000;
@@ -123,16 +127,6 @@ type SessionUpdatePrinterDeps = {
   log?: (line: string) => void;
 };
 
-// U+202A-U+202E (embeddings/overrides) and U+2066-U+2069 (isolates): the
-// bidi controls capable of reordering how SUBSEQUENT text visually renders
-// regardless of byte order (the "Trojan Source"-style spoofing vector).
-// Deliberately narrower than the full Unicode Format category: chat text
-// legitimately uses ZWJ/ZWNJ (U+200D/U+200C) for emoji sequences and
-// complex script shaping, and simple direction marks (U+200E/U+200F) for
-// ordinary mixed-direction prose, none of which reorder anything beyond
-// themselves.
-const ACP_DANGEROUS_BIDI_CONTROL_PATTERN = /[‪-‮⁦-⁩]/g;
-
 /**
  * Sanitizes one connection's untrusted agent_message_chunk text: ANSI/C1
  * escape sequences via a stateful AnsiSequenceStripper (state carried across
@@ -142,14 +136,19 @@ const ACP_DANGEROUS_BIDI_CONTROL_PATTERN = /[‪-‮⁦-⁩]/g;
  * createStreamingBinaryOutputSanitizer (built for process output, where
  * \r is a legitimate progress-bar character and stripping the whole Unicode
  * Format category is harmless), this keeps real newlines and format
- * characters intact and only removes \r and the specific dangerous bidi
- * controls above.
+ * characters intact and only removes \r and the shared dangerous-bidi
+ * pattern (see safe-text.ts).
  */
-function createAcpChatTextSanitizer(): (text: string) => string {
+function createAcpChatTextSanitizer(): ((text: string) => string) & { reset: () => void } {
   const ansiStripper = new AnsiSequenceStripper();
   let pendingHighSurrogate = "";
-  return (text: string) => {
-    const withoutAnsi = pendingHighSurrogate + ansiStripper.write(text);
+  const sanitize = (rawText: string) => {
+    // Surrogate-pair adjacency must be judged on the RAW stream, before any
+    // ANSI stripping runs: if an escape sequence sat between a high
+    // surrogate and what looks like its low surrogate in a later chunk,
+    // they were never actually adjacent in the original data, and combining
+    // them after stripping would synthesize a character that never existed.
+    const withPending = pendingHighSurrogate + rawText;
     pendingHighSurrogate = "";
     // A high surrogate at the very end of this buffer might be the first
     // half of an astral character (e.g. an emoji) split across two
@@ -161,14 +160,15 @@ function createAcpChatTextSanitizer(): (text: string) => string {
     // flushed, which is harmless. codePointAt at the last index can only
     // return a raw (unpaired) surrogate value here, since there is no
     // following code unit within this buffer to combine it with.
-    const lastCode = withoutAnsi.codePointAt(withoutAnsi.length - 1);
+    const lastCode = withPending.codePointAt(withPending.length - 1);
     const endsWithUnpairedHighSurrogate =
       lastCode !== undefined && lastCode >= 0xd800 && lastCode <= 0xdbff;
-    const toProcess = endsWithUnpairedHighSurrogate ? withoutAnsi.slice(0, -1) : withoutAnsi;
+    const toProcess = endsWithUnpairedHighSurrogate ? withPending.slice(0, -1) : withPending;
     if (endsWithUnpairedHighSurrogate) {
-      pendingHighSurrogate = withoutAnsi.slice(-1);
+      pendingHighSurrogate = withPending.slice(-1);
     }
-    const withoutBidiOverrides = toProcess.replace(ACP_DANGEROUS_BIDI_CONTROL_PATTERN, "");
+    const withoutAnsi = ansiStripper.write(toProcess);
+    const withoutBidiOverrides = withoutAnsi.replace(DANGEROUS_BIDI_CONTROL_PATTERN, "");
     const withoutLoneSurrogates = withoutBidiOverrides.replace(/\p{Surrogate}/gu, "");
     if (!withoutLoneSurrogates) {
       return withoutLoneSurrogates;
@@ -196,6 +196,12 @@ function createAcpChatTextSanitizer(): (text: string) => string {
     }
     return chunks.join("");
   };
+  return Object.assign(sanitize, {
+    reset: () => {
+      ansiStripper.finish();
+      pendingHighSurrogate = "";
+    },
+  });
 }
 
 /**
@@ -212,11 +218,11 @@ function createAcpChatTextSanitizer(): (text: string) => string {
  */
 export function createSessionUpdatePrinter(
   deps: SessionUpdatePrinterDeps = {},
-): (notification: SessionNotification) => void {
+): ((notification: SessionNotification) => void) & { reset: () => void } {
   const write = deps.write ?? ((text: string) => process.stdout.write(text));
   const log = deps.log ?? ((line: string) => console.log(line));
   const sanitizeStream = createAcpChatTextSanitizer();
-  return function printSessionUpdate(notification: SessionNotification): void {
+  const printSessionUpdate = (notification: SessionNotification): void => {
     const update = notification.update;
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
@@ -250,6 +256,17 @@ export function createSessionUpdatePrinter(
       default:
     }
   };
+  return Object.assign(printSessionUpdate, {
+    // Clears the sanitizer's ANSI-parse state and any pending surrogate
+    // half. Without this, an incomplete escape sequence or split surrogate
+    // left dangling at the end of one prompt's response would silently
+    // consume or corrupt the start of the next turn's text -- two
+    // genuinely unrelated streams, not one continuous one, since a new
+    // prompt() call is a new response from the agent.
+    reset: () => {
+      sanitizeStream.reset();
+    },
+  });
 }
 
 async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHandle> {
@@ -344,6 +361,7 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
       client,
       agent,
       sessionId: session.sessionId,
+      resetSessionUpdatePrinter: printSessionUpdate.reset,
     };
   } catch (error) {
     await terminateAcpServer(agent);
@@ -353,7 +371,7 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
 
 /** Starts the terminal prompt loop for a local ACP client session. */
 export async function runAcpClientInteractive(opts: AcpClientOptions = {}): Promise<void> {
-  const { client, agent, sessionId } = await createAcpClient(opts);
+  const { client, agent, sessionId, resetSessionUpdatePrinter } = await createAcpClient(opts);
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -386,6 +404,14 @@ export async function runAcpClientInteractive(opts: AcpClientOptions = {}): Prom
           console.log(`\n[${response.stopReason}]\n`);
         } catch (err) {
           console.error(`\n[error] ${String(err)}\n`);
+        } finally {
+          // Each prompt() call is a new, independent response from the
+          // agent -- an incomplete escape sequence or split surrogate left
+          // dangling at the end of one turn's text must not leak into and
+          // corrupt the start of the next. Reset regardless of success or
+          // failure, since a mid-stream error can leave the same kind of
+          // dangling state behind.
+          resetSessionUpdatePrinter();
         }
 
         prompt();

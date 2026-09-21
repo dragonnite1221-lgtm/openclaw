@@ -775,8 +775,11 @@ describe("resolvePermissionRequest", () => {
   });
 
   it("uses reject_always when reject_once is absent", async () => {
+    // allow_once is present, so this request is genuinely actionable in
+    // both directions -- the missing piece here is specifically
+    // reject_once, not the ability to allow at all.
     const options: RequestPermissionRequest["options"] = [
-      { kind: "allow_always", name: "Always allow", optionId: "allow-always" },
+      { kind: "allow_once", name: "Allow once", optionId: "allow-once" },
       { kind: "reject_always", name: "Always reject", optionId: "reject-always" },
     ];
     const prompt = vi.fn(async () => false);
@@ -787,14 +790,42 @@ describe("resolvePermissionRequest", () => {
       }),
       { prompt, log: () => {} },
     );
+    expect(prompt).toHaveBeenCalledTimes(1);
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "reject-always" } });
+  });
+
+  it("cancels without prompting when only allow_always is offered, even though reject_always could otherwise answer no", async () => {
+    // Without allow_once, an "Allow ...? (y/N)" question is misleading
+    // regardless of what the user would answer: a "yes" is a guaranteed
+    // dead end, so the question is never asked at all -- not even to let
+    // the user say "no" through reject_always, since the user can't know
+    // in advance which answer would actually do something.
+    const options: RequestPermissionRequest["options"] = [
+      { kind: "allow_always", name: "Always allow", optionId: "allow-always" },
+      { kind: "reject_always", name: "Always reject", optionId: "reject-always" },
+    ];
+    const prompt = vi.fn(async () => false);
+    const log = vi.fn();
+    const res = await resolvePermissionRequest(
+      makePermissionRequest({
+        toolCall: { toolCallId: "tool-only-always", title: "gateway: reload", status: "pending" },
+        options,
+      }),
+      { prompt, log },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("[permission cancelled] gateway: missing allow_once option");
+    expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
   it("cancels a manual approval instead of silently granting allow_always", async () => {
     // A plain "Allow ...? (y/N)" confirmation never told the user this
     // request would be granted beyond the current call, so approving it
     // must not fall back to a persistent grant just because allow_once
-    // happens to be missing from this request's options.
+    // happens to be missing from this request's options. It must not even
+    // ask the question: a "yes" answer here could never be honored, so
+    // prompting first and discarding the answer as cancelled would be a
+    // dead end that contradicts what was just asked.
     const options: RequestPermissionRequest["options"] = [
       { kind: "allow_always", name: "Always allow", optionId: "allow-always" },
       { kind: "reject_once", name: "Reject", optionId: "reject" },
@@ -812,7 +843,7 @@ describe("resolvePermissionRequest", () => {
       }),
       { prompt, log },
     );
-    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("[permission cancelled] gateway: missing allow_once option");
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
@@ -852,6 +883,23 @@ describe("resolvePermissionRequest", () => {
 
     expect(prompt).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("[permission cancelled] read: missing allow_once option");
+    expect(res).toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  it("cancels with a clear reason when declining has no reject option either", async () => {
+    const options: RequestPermissionRequest["options"] = [
+      { kind: "allow_once", name: "Allow once", optionId: "allow" },
+    ];
+    const prompt = vi.fn(async () => false);
+    const log = vi.fn();
+    const res = await resolvePermissionRequest(
+      makePermissionRequest({
+        toolCall: { toolCallId: "tool-no-reject", title: "gateway: reload", status: "pending" },
+        options,
+      }),
+      { prompt, log },
+    );
+    expect(log).toHaveBeenCalledWith("[permission cancelled] gateway: missing reject option");
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
@@ -1205,6 +1253,58 @@ describe("createSessionUpdatePrinter", () => {
       }),
     );
     expect(written.join("")).toBe("beforenot-a-low-surrogate");
+  });
+
+  it("does not synthesize an astral character across an ANSI sequence and an unrelated later chunk", () => {
+    // Surrogate adjacency must be judged on the RAW stream, not on the
+    // ANSI-stripped result: this high surrogate is immediately followed by
+    // an ANSI clear-screen sequence in the actual data, never by anything
+    // that could pair with it. Deciding adjacency AFTER stripping would
+    // make it look like it ends the chunk, and combining it with an
+    // unrelated low surrogate from a later chunk would fabricate a
+    // character (here, an emoji) that the server never actually sent.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `safe${highSurrogate}[2J` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe("safeafter");
+  });
+
+  it("reset() clears pending ANSI and surrogate state between prompt turns", () => {
+    // Each prompt() call is a new, independent response from the agent --
+    // an incomplete escape sequence or dangling surrogate half left at the
+    // end of one turn must not leak into and corrupt the next.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "first turn[" },
+      }),
+    );
+    print.reset();
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "2Jsecond turn" },
+      }),
+    );
+    // Without the reset, "2J" would be consumed as the pending CSI's
+    // terminator instead of printed as ordinary text.
+    expect(written.join("")).toBe("first turn2Jsecond turn");
   });
 
   it("strips dangerous bidi override characters", () => {

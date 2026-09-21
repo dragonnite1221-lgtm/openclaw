@@ -133,11 +133,17 @@ export async function resolvePermissionRequest(
   const rejectOption = pickOption(options, ["reject_once", "reject_always"]);
   const promptRequired = !classification.autoApprove;
 
+  // Checked before EITHER path proceeds: if there is no way to honor an
+  // approval at all, prompting the user with "Allow ...? (y/N)" and then
+  // discarding a "yes" answer as cancelled is a dead end that contradicts
+  // the question just asked. Cancel immediately instead, the same way the
+  // auto-approve path already did.
+  if (!allowOnceOption) {
+    log(`[permission cancelled] ${toolName ?? "unknown"}: missing allow_once option`);
+    return cancelledPermission();
+  }
+
   if (!promptRequired) {
-    if (!allowOnceOption) {
-      log(`[permission cancelled] ${toolName ?? "unknown"}: missing allow_once option`);
-      return cancelledPermission();
-    }
     log(`[permission auto-approved] ${toolName} (${toolKind ?? "unknown"})`);
     return selectedPermission(allowOnceOption.optionId);
   }
@@ -147,16 +153,14 @@ export async function resolvePermissionRequest(
   );
   const approved = await prompt(toolName, toolTitle);
 
-  if (approved && allowOnceOption) {
+  if (approved) {
     return selectedPermission(allowOnceOption.optionId);
   }
-  if (!approved && rejectOption) {
+  if (rejectOption) {
     return selectedPermission(rejectOption.optionId);
   }
 
-  log(
-    `[permission cancelled] ${toolName ?? "unknown"}: missing ${approved ? "allow_once" : "reject"} option`,
-  );
+  log(`[permission cancelled] ${toolName ?? "unknown"}: missing reject option`);
   return cancelledPermission();
 }
 
