@@ -195,7 +195,8 @@ function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null
 } {
   const ansiStripper = new AnsiSequenceStripper();
   let pendingHighSurrogate = "";
-  let lastMessageId: string | undefined;
+  let hasSeenChunk = false;
+  let lastMessageId: string | null = null;
   const doReset = () => {
     ansiStripper.finish();
     pendingHighSurrogate = "";
@@ -203,15 +204,18 @@ function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null
   const sanitize = (rawText: string, messageId?: string | null) => {
     // ACP defines a changed messageId as a new message starting -- reset
     // first so a dangling escape sequence or surrogate half from a
-    // previous message can't bleed into this one. Only compares two
-    // concrete ids: many backends never populate messageId at all, and
-    // that absence carries no signal either way.
-    if (messageId != null && lastMessageId !== undefined && messageId !== lastMessageId) {
+    // previous message can't bleed into this one. `null` and `undefined`
+    // are normalized to the same sentinel: a backend that never populates
+    // messageId at all stays consistently "absent" and never triggers a
+    // false reset, but a backend that only *sometimes* populates it still
+    // gets a reset on the presence transition itself, not just on a
+    // concrete-to-concrete change.
+    const normalizedMessageId = messageId ?? null;
+    if (hasSeenChunk && normalizedMessageId !== lastMessageId) {
       doReset();
     }
-    if (messageId != null) {
-      lastMessageId = messageId;
-    }
+    hasSeenChunk = true;
+    lastMessageId = normalizedMessageId;
 
     // See stripUnpairedSurrogates: pending is prepended unconditionally
     // and re-validated from scratch, since a surrogate held from the
@@ -251,7 +255,8 @@ function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null
   return Object.assign(sanitize, {
     reset: () => {
       doReset();
-      lastMessageId = undefined;
+      hasSeenChunk = false;
+      lastMessageId = null;
     },
   });
 }
@@ -280,6 +285,14 @@ export function createSessionUpdatePrinter(
       case "agent_message_chunk": {
         if (update.content?.type === "text") {
           write(sanitizeStream(update.content.text, update.messageId));
+        } else {
+          // ACP permits image, audio, and resource content blocks within
+          // the same message. A non-text block is a real break in the
+          // rendered text stream -- reset so text before and after it
+          // can't be treated as adjacent (a pending escape sequence or
+          // surrogate half bridging across an unrelated image would
+          // otherwise corrupt or fabricate a character).
+          sanitizeStream.reset();
         }
         return;
       }

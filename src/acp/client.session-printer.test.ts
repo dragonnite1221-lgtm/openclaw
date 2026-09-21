@@ -424,4 +424,55 @@ describe("createSessionUpdatePrinter", () => {
     );
     expect(written.join("")).toBe("before2Jafter");
   });
+
+  it("resets pending sanitizer state when messageId transitions between absent and present", () => {
+    // A concrete-to-concrete change isn't the only way messageId can
+    // signal a new message: a backend might only sometimes populate it.
+    // The transition itself must reset, not just a change between two
+    // concrete values.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "before[" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("before2Jafter");
+  });
+
+  it("resets pending sanitizer state when a non-text content block interrupts the message", () => {
+    // ACP permits image, audio, and resource blocks within one message.
+    // Text before and after one of these blocks is not adjacent in the
+    // rendered stream, even though both chunks share sessionUpdate
+    // "agent_message_chunk".
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "before[" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("before2Jafter");
+  });
 });
