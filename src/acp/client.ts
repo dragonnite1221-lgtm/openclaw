@@ -232,6 +232,12 @@ export function createSessionUpdatePrinter(
         return;
       }
       case "tool_call": {
+        // A tool_call is a real, visible interruption of the message-chunk
+        // stream: it logs its own line rather than continuing the current
+        // one. An escape sequence or surrogate half left dangling from
+        // before the interruption must not reach across it and corrupt
+        // text belonging to a new, unrelated chunk.
+        sanitizeStream.reset();
         log(
           `\n[tool] ${sanitizeTerminalText(update.title)} (${sanitizeTerminalText(update.status ?? "unknown")})`,
         );
@@ -239,6 +245,7 @@ export function createSessionUpdatePrinter(
       }
       case "tool_call_update": {
         if (update.status) {
+          sanitizeStream.reset();
           log(
             `[tool update] ${sanitizeTerminalText(update.toolCallId)}: ${sanitizeTerminalText(update.status)}`,
           );
@@ -250,6 +257,7 @@ export function createSessionUpdatePrinter(
           ?.map((cmd) => `/${sanitizeTerminalText(cmd.name)}`)
           .join(" ");
         if (names) {
+          sanitizeStream.reset();
           log(`\n[commands] ${names}`);
         }
       }

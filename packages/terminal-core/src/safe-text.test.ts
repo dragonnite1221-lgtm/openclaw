@@ -40,12 +40,23 @@ describe("sanitizeTerminalText", () => {
     expect(sanitizeTerminalText("safe‮reversed")).toBe("safereversed");
   });
 
-  it("preserves simple direction marks and joiners", () => {
-    // Unlike the full Unicode Format category, only the specific
-    // override/isolate controls are removed -- ZWJ/ZWNJ (needed for emoji
-    // sequences and script shaping) and simple LRM/RLM marks are left
-    // alone since neither reorders anything beyond itself.
+  it("preserves joiners needed for emoji sequences and script shaping", () => {
+    // ZWJ/ZWNJ are Join_Control, not Bidi_Control -- they can't reorder
+    // anything and are needed to keep composed emoji and complex scripts
+    // intact even in a single-line field.
     expect(sanitizeTerminalText("a‍b")).toBe("a‍b");
-    expect(sanitizeTerminalText("a‎b")).toBe("a‎b");
+  });
+
+  it("strips the full Bidi_Control set, not just the override/isolate subset", () => {
+    // sanitizeTerminalText is used for short, security-sensitive
+    // single-line fields (permission titles, tool names) where there is no
+    // legitimate need for any directional mark, and the stakes of a
+    // spoofed rendering are high. Unlike the narrower pattern applied to
+    // long-form streamed chat text, every control in Unicode's official
+    // Bidi_Control property is removed here: LRM, RLM, ALM, plus the
+    // stronger embedding/override and isolate controls.
+    expect(sanitizeTerminalText("a‎b")).toBe("ab"); // LRM
+    expect(sanitizeTerminalText("a‏b")).toBe("ab"); // RLM
+    expect(sanitizeTerminalText("a؜b")).toBe("ab"); // ALM
   });
 });

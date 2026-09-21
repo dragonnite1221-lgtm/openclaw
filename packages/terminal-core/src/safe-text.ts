@@ -22,14 +22,25 @@ export function hasTerminalControl(input: string): boolean {
 // text uses ZWJ/ZWNJ (U+200D/U+200C) for emoji sequences and complex script
 // shaping, and simple direction marks (U+200E/U+200F) for ordinary
 // mixed-direction prose, none of which reorder anything beyond themselves.
+// Used for long-form streamed chat text, where stripping LRM/RLM/ALM would
+// break legitimate mixed-direction prose.
 export const DANGEROUS_BIDI_CONTROL_PATTERN = /[‪-‮⁦-⁩]/g;
+
+// The full Unicode Bidi_Control property: the two above PLUS U+061C (ALM),
+// U+200E (LRM), and U+200F (RLM). Those three are individually weaker --
+// they influence only adjacent characters rather than reordering a whole
+// span -- but sanitizeTerminalText's callers are short, security-sensitive
+// single-line fields (permission-request titles, tool names) with no
+// legitimate use for any directional mark, so the full set is stripped
+// here even though the streaming chat-text sanitizer keeps them.
+const STRICT_BIDI_CONTROL_PATTERN = /[؜‎‏‪-‮⁦-⁩]/g;
 
 /**
  * Normalize untrusted text for single-line terminal/log rendering.
  */
 export function sanitizeTerminalText(input: string): string {
   const normalized = stripAnsi(input)
-    .replace(DANGEROUS_BIDI_CONTROL_PATTERN, "")
+    .replace(STRICT_BIDI_CONTROL_PATTERN, "")
     .replace(/\r/g, "\\r")
     .replace(/\n/g, "\\n")
     .replace(/\t/g, "\\t");
