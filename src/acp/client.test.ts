@@ -1163,6 +1163,50 @@ describe("createSessionUpdatePrinter", () => {
     expect(written.join("")).toBe(`hello ${womanTechnologist} world`);
   });
 
+  it("preserves an astral character split across two notification chunks", () => {
+    // A server could send an emoji's high surrogate at the very end of one
+    // chunk and its low surrogate at the start of the next. Treating each
+    // chunk's surrogate independently (both "unpaired" on their own) would
+    // silently delete the character entirely instead of reassembling it.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe(`before${grinningFace}after`);
+  });
+
+  it("drops a high surrogate that turns out to be genuinely unpaired", () => {
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const loneHighSurrogate = "\u{1F600}".charAt(0);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${loneHighSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "not-a-low-surrogate" },
+      }),
+    );
+    expect(written.join("")).toBe("beforenot-a-low-surrogate");
+  });
+
   it("strips dangerous bidi override characters", () => {
     // U+202E (right-to-left override) is the classic "Trojan Source"-style
     // vector for making displayed text visually reorder away from its

@@ -147,9 +147,28 @@ const ACP_DANGEROUS_BIDI_CONTROL_PATTERN = /[‪-‮⁦-⁩]/g;
  */
 function createAcpChatTextSanitizer(): (text: string) => string {
   const ansiStripper = new AnsiSequenceStripper();
+  let pendingHighSurrogate = "";
   return (text: string) => {
-    const withoutAnsi = ansiStripper.write(text);
-    const withoutBidiOverrides = withoutAnsi.replace(ACP_DANGEROUS_BIDI_CONTROL_PATTERN, "");
+    const withoutAnsi = pendingHighSurrogate + ansiStripper.write(text);
+    pendingHighSurrogate = "";
+    // A high surrogate at the very end of this buffer might be the first
+    // half of an astral character (e.g. an emoji) split across two
+    // notification chunks -- hold it back instead of treating it as an
+    // invalid lone surrogate yet. It's proven genuinely unpaired only once
+    // a later chunk's leading code unit turns out not to be its matching
+    // low surrogate, in which case the surrogate-stripping step below
+    // removes it as usual; if the stream simply ends first, it never gets
+    // flushed, which is harmless. codePointAt at the last index can only
+    // return a raw (unpaired) surrogate value here, since there is no
+    // following code unit within this buffer to combine it with.
+    const lastCode = withoutAnsi.codePointAt(withoutAnsi.length - 1);
+    const endsWithUnpairedHighSurrogate =
+      lastCode !== undefined && lastCode >= 0xd800 && lastCode <= 0xdbff;
+    const toProcess = endsWithUnpairedHighSurrogate ? withoutAnsi.slice(0, -1) : withoutAnsi;
+    if (endsWithUnpairedHighSurrogate) {
+      pendingHighSurrogate = withoutAnsi.slice(-1);
+    }
+    const withoutBidiOverrides = toProcess.replace(ACP_DANGEROUS_BIDI_CONTROL_PATTERN, "");
     const withoutLoneSurrogates = withoutBidiOverrides.replace(/\p{Surrogate}/gu, "");
     if (!withoutLoneSurrogates) {
       return withoutLoneSurrogates;
