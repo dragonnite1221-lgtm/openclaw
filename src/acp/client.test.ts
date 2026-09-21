@@ -1113,6 +1113,40 @@ describe("createSessionUpdatePrinter", () => {
     expect(written.join("")).toBe("beforeafter");
   });
 
+  it("strips a bare carriage return that would overwrite the current line", () => {
+    // createStreamingBinaryOutputSanitizer deliberately preserves \r for its
+    // other caller (shell progress bars); an ACP chat message has no such
+    // legitimate use, and a bare \r left in place would let a server
+    // overwrite already-printed text on the same line.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "safe\rspoofed" },
+      }),
+    );
+    expect(written.join("")).toBe("safespoofed");
+  });
+
+  it("keeps a real CRLF line ending as a plain newline, even split across chunks", () => {
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "line one\r" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "\nline two" },
+      }),
+    );
+    expect(written.join("")).toBe("line one\nline two");
+  });
+
   it("strips a control sequence deliberately split across two chunks", () => {
     // A malicious or buggy server could send the escape introducer in one
     // notification and the rest of the sequence in the next, hoping a

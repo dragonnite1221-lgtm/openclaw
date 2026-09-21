@@ -145,7 +145,16 @@ export function createSessionUpdatePrinter(
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
         if (update.content?.type === "text") {
-          write(sanitizeStream(update.content.text));
+          // createStreamingBinaryOutputSanitizer deliberately keeps bare \r,
+          // since its other caller (shell output) needs it for legitimate
+          // carriage-return progress bars. A chat message has no equivalent
+          // legitimate use, and an ACP server could otherwise send text like
+          // "safe\rspoofed" to overwrite the start of the current line, so
+          // \r is dropped here after ANSI/control stripping. This is safe to
+          // apply per chunk independently of where \r\n might be split
+          // across chunk boundaries: each half still resolves to the same
+          // final text (the \r removed, the \n kept) regardless of order.
+          write(sanitizeStream(update.content.text).replace(/\r/g, ""));
         }
         return;
       }
