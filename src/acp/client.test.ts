@@ -1,7 +1,7 @@
 /** Tests ACP client permission handling, env sanitization, and spawn invocation resolution. */
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { RequestPermissionRequest } from "@agentclientprotocol/sdk";
+import type { RequestPermissionRequest, SessionNotification } from "@agentclientprotocol/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 
@@ -47,6 +47,7 @@ import {
   resolvePermissionRequest,
   shouldStripProviderAuthEnvVarsForAcpServer,
 } from "./client-helpers.js";
+import { createSessionUpdatePrinter } from "./client.js";
 import {
   extractAttachmentsFromPrompt,
   extractTextFromPrompt,
@@ -773,7 +774,7 @@ describe("resolvePermissionRequest", () => {
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "reject" } });
   });
 
-  it("uses allow_always and reject_always when once options are absent", async () => {
+  it("uses reject_always when reject_once is absent", async () => {
     const options: RequestPermissionRequest["options"] = [
       { kind: "allow_always", name: "Always allow", optionId: "allow-always" },
       { kind: "reject_always", name: "Always reject", optionId: "reject-always" },
@@ -787,6 +788,50 @@ describe("resolvePermissionRequest", () => {
       { prompt, log: () => {} },
     );
     expect(res).toEqual({ outcome: { outcome: "selected", optionId: "reject-always" } });
+  });
+
+  it("cancels a manual approval instead of silently granting allow_always", async () => {
+    // A plain "Allow ...? (y/N)" confirmation never told the user this
+    // request would be granted beyond the current call, so approving it
+    // must not fall back to a persistent grant just because allow_once
+    // happens to be missing from this request's options.
+    const options: RequestPermissionRequest["options"] = [
+      { kind: "allow_always", name: "Always allow", optionId: "allow-always" },
+      { kind: "reject_once", name: "Reject", optionId: "reject" },
+    ];
+    const prompt = vi.fn(async () => true);
+    const log = vi.fn();
+    const res = await resolvePermissionRequest(
+      makePermissionRequest({
+        toolCall: {
+          toolCallId: "tool-manual-no-once",
+          title: "gateway: reload",
+          status: "pending",
+        },
+        options,
+      }),
+      { prompt, log },
+    );
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith("[permission cancelled] gateway: missing allow_once option");
+    expect(res).toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  it("cancels auto-approval instead of silently granting allow_always", async () => {
+    // Same hazard on the auto-approve path: the classifier decided this
+    // request never needs a prompt at all, so silently escalating to a
+    // persistent grant would extend trust with no confirmation whatsoever.
+    const prompt = vi.fn(async () => true);
+    const log = vi.fn();
+    const res = await resolvePermissionRequest(
+      makePermissionRequest({
+        options: [{ kind: "allow_always", name: "Always allow", optionId: "allow-always" }],
+      }),
+      { prompt, log },
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("[permission cancelled] read: missing allow_once option");
+    expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
   it("cancels auto-approved requests when no allow option is available", async () => {
@@ -806,7 +851,7 @@ describe("resolvePermissionRequest", () => {
     );
 
     expect(prompt).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith("[permission cancelled] read: missing allow option");
+    expect(log).toHaveBeenCalledWith("[permission cancelled] read: missing allow_once option");
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
@@ -1036,5 +1081,98 @@ describe("acp event mapper", () => {
     expect(title).toBe(
       'exec: command: \\x1b[2K\\x1b[1A\\x1b[2K[permission] Allow "safe"? (y/N) \\nnext',
     );
+  });
+});
+
+describe("createSessionUpdatePrinter", () => {
+  function makeNotification(update: SessionNotification["update"]): SessionNotification {
+    return { sessionId: "session-1", update };
+  }
+
+  it("preserves real newlines in streamed agent message text", () => {
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "line one\nline two" },
+      }),
+    );
+    expect(written.join("")).toBe("line one\nline two");
+  });
+
+  it("strips a terminal control sequence from streamed agent message text", () => {
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "before[2J[Hafter" },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
+  it("strips a control sequence deliberately split across two chunks", () => {
+    // A malicious or buggy server could send the escape introducer in one
+    // notification and the rest of the sequence in the next, hoping a
+    // per-chunk-only filter lets both halves through unsanitized.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "before[2" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
+  it("sanitizes a tool_call title", () => {
+    const lines: string[] = [];
+    const print = createSessionUpdatePrinter({ log: (line) => lines.push(line) });
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "exec[2Jclear screen",
+        status: "pending",
+      }),
+    );
+    expect(lines).toEqual(["\n[tool] execclear screen (pending)"]);
+  });
+
+  it("sanitizes a tool_call_update's toolCallId and status", () => {
+    const lines: string[] = [];
+    const print = createSessionUpdatePrinter({ log: (line) => lines.push(line) });
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool\r[Hspoofed",
+        status: "completed",
+      }),
+    );
+    expect(lines).toEqual(["[tool update] tool\\rspoofed: completed"]);
+  });
+
+  it("sanitizes command names in available_commands_update", () => {
+    const lines: string[] = [];
+    const print = createSessionUpdatePrinter({ log: (line) => lines.push(line) });
+    print(
+      makeNotification({
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          { name: "help[2K", description: "d" },
+          { name: "status", description: "d" },
+        ],
+      }),
+    );
+    expect(lines).toEqual(["\n[commands] /help /status"]);
   });
 });

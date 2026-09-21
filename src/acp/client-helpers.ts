@@ -121,17 +121,25 @@ export async function resolvePermissionRequest(
     return cancelledPermission();
   }
 
-  const allowOption = pickOption(options, ["allow_once", "allow_always"]);
+  // Only ever select allow_once, both here and below: neither an
+  // auto-approve decision nor a plain "Allow ...? (y/N)" confirmation
+  // communicates that a request is being granted BEYOND this one call, so
+  // silently falling back to allow_always when allow_once is absent would
+  // extend trust past what was actually confirmed. A persistent grant
+  // requires its own explicit, scope-aware approval flow -- not a mix-up
+  // fallback from a one-time question. Declining is always safe to persist
+  // (reject_always never grants anything), so that fallback stays.
+  const allowOnceOption = pickOption(options, ["allow_once"]);
   const rejectOption = pickOption(options, ["reject_once", "reject_always"]);
   const promptRequired = !classification.autoApprove;
 
   if (!promptRequired) {
-    if (!allowOption) {
-      log(`[permission cancelled] ${toolName ?? "unknown"}: missing allow option`);
+    if (!allowOnceOption) {
+      log(`[permission cancelled] ${toolName ?? "unknown"}: missing allow_once option`);
       return cancelledPermission();
     }
     log(`[permission auto-approved] ${toolName} (${toolKind ?? "unknown"})`);
-    return selectedPermission(allowOption.optionId);
+    return selectedPermission(allowOnceOption.optionId);
   }
 
   log(
@@ -139,15 +147,15 @@ export async function resolvePermissionRequest(
   );
   const approved = await prompt(toolName, toolTitle);
 
-  if (approved && allowOption) {
-    return selectedPermission(allowOption.optionId);
+  if (approved && allowOnceOption) {
+    return selectedPermission(allowOnceOption.optionId);
   }
   if (!approved && rejectOption) {
     return selectedPermission(rejectOption.optionId);
   }
 
   log(
-    `[permission cancelled] ${toolName ?? "unknown"}: missing ${approved ? "allow" : "reject"} option`,
+    `[permission cancelled] ${toolName ?? "unknown"}: missing ${approved ? "allow_once" : "reject"} option`,
   );
   return cancelledPermission();
 }

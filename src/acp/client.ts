@@ -14,6 +14,8 @@ import {
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import { createStreamingBinaryOutputSanitizer } from "../agents/shell-utils.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { killProcessTree, signalProcessTree } from "../process/kill-tree.js";
 import {
@@ -116,33 +118,62 @@ function resolveSelfEntryPath(): string | null {
   return null;
 }
 
-function printSessionUpdate(notification: SessionNotification): void {
-  const update = notification.update;
-  switch (update.sessionUpdate) {
-    case "agent_message_chunk": {
-      if (update.content?.type === "text") {
-        process.stdout.write(update.content.text);
+type SessionUpdatePrinterDeps = {
+  write?: (text: string) => void;
+  log?: (line: string) => void;
+};
+
+/**
+ * A remote ACP server's notifications are untrusted input: without
+ * sanitization, a tool title, status, or streamed message chunk containing
+ * terminal control sequences (screen clear, cursor movement) could overwrite
+ * or hide what's already on screen. Multi-line message text keeps real
+ * newlines via a stateful, cross-chunk-safe ANSI/control-char sanitizer (one
+ * per connection, so a sequence deliberately split across chunk boundaries
+ * still gets caught); single-line fields (titles, ids, status, command
+ * names) go through sanitizeTerminalText, which escapes newlines instead of
+ * printing them since those fields are never meant to span lines.
+ */
+export function createSessionUpdatePrinter(
+  deps: SessionUpdatePrinterDeps = {},
+): (notification: SessionNotification) => void {
+  const write = deps.write ?? ((text: string) => process.stdout.write(text));
+  const log = deps.log ?? ((line: string) => console.log(line));
+  const sanitizeStream = createStreamingBinaryOutputSanitizer();
+  return function printSessionUpdate(notification: SessionNotification): void {
+    const update = notification.update;
+    switch (update.sessionUpdate) {
+      case "agent_message_chunk": {
+        if (update.content?.type === "text") {
+          write(sanitizeStream(update.content.text));
+        }
+        return;
       }
-      return;
-    }
-    case "tool_call": {
-      console.log(`\n[tool] ${update.title} (${update.status})`);
-      return;
-    }
-    case "tool_call_update": {
-      if (update.status) {
-        console.log(`[tool update] ${update.toolCallId}: ${update.status}`);
+      case "tool_call": {
+        log(
+          `\n[tool] ${sanitizeTerminalText(update.title)} (${sanitizeTerminalText(update.status ?? "unknown")})`,
+        );
+        return;
       }
-      return;
-    }
-    case "available_commands_update": {
-      const names = update.availableCommands?.map((cmd) => `/${cmd.name}`).join(" ");
-      if (names) {
-        console.log(`\n[commands] ${names}`);
+      case "tool_call_update": {
+        if (update.status) {
+          log(
+            `[tool update] ${sanitizeTerminalText(update.toolCallId)}: ${sanitizeTerminalText(update.status)}`,
+          );
+        }
+        return;
       }
+      case "available_commands_update": {
+        const names = update.availableCommands
+          ?.map((cmd) => `/${sanitizeTerminalText(cmd.name)}`)
+          .join(" ");
+        if (names) {
+          log(`\n[commands] ${names}`);
+        }
+      }
+      default:
     }
-    default:
-  }
+  };
 }
 
 async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHandle> {
@@ -201,6 +232,7 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
     const input = Writable.toWeb(agent.stdin);
     const output = Readable.toWeb(agent.stdout) as unknown as ReadableStream<Uint8Array>;
     const stream = ndJsonStream(input, output);
+    const printSessionUpdate = createSessionUpdatePrinter();
 
     const client = new ClientSideConnection(
       () => ({
@@ -217,10 +249,12 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
     log("initializing");
     await client.initialize({
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {
-        fs: { readTextFile: true, writeTextFile: true },
-        terminal: true,
-      },
+      // The client object above only implements sessionUpdate and
+      // requestPermission -- no fs/read_text_file, fs/write_text_file, or
+      // terminal/* handlers exist, so advertising those capabilities would
+      // let a server delegate work this client can't actually perform.
+      // Both fields are optional; omitting them means "not supported."
+      clientCapabilities: {},
       clientInfo: { name: "openclaw-acp-client", version: "1.0.0" },
     });
 
