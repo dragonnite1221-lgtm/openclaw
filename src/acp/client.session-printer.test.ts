@@ -3,6 +3,14 @@ import type { SessionNotification } from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 import { createSessionUpdatePrinter } from "./client.js";
 
+// Built from its code point rather than embedded literally: a raw ESC byte
+// in this file's source would let ordinary terminal tools (cat, a naive
+// pager) actually execute the CSI sequences these fixtures construct
+// (clear screen, cursor movement) when displaying the file or its diff --
+// exactly the kind of terminal-control injection this module's sanitizer
+// exists to catch.
+const ESC = String.fromCharCode(0x1b);
+
 describe("createSessionUpdatePrinter", () => {
   function makeNotification(update: SessionNotification["update"]): SessionNotification {
     return { sessionId: "session-1", update };
@@ -26,7 +34,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "before[2J[Hafter" },
+        content: { type: "text", text: `before${ESC}[2J${ESC}[Hafter` },
       }),
     );
     expect(written.join("")).toBe("beforeafter");
@@ -142,7 +150,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: `safe${highSurrogate}[2J` },
+        content: { type: "text", text: `safe${highSurrogate}${ESC}[2J` },
       }),
     );
     print(
@@ -163,7 +171,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "first turn[" },
+        content: { type: "text", text: `first turn${ESC}[` },
       }),
     );
     print.reset();
@@ -193,7 +201,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "before[" },
+        content: { type: "text", text: `before${ESC}[` },
       }),
     );
     print(
@@ -227,7 +235,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "before[" },
+        content: { type: "text", text: `before${ESC}[` },
       }),
     );
     print(
@@ -268,7 +276,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: `[2J${lowSurrogate}after` },
+        content: { type: "text", text: `${ESC}[2J${lowSurrogate}after` },
       }),
     );
     expect(written.join("")).toBe("beforeafter");
@@ -301,7 +309,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "before[2" },
+        content: { type: "text", text: `before${ESC}[2` },
       }),
     );
     print(
@@ -320,7 +328,7 @@ describe("createSessionUpdatePrinter", () => {
       makeNotification({
         sessionUpdate: "tool_call",
         toolCallId: "tool-1",
-        title: "exec[2Jclear screen",
+        title: `exec${ESC}[2Jclear screen`,
         status: "pending",
       }),
     );
@@ -333,7 +341,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "tool_call_update",
-        toolCallId: "tool\r[Hspoofed",
+        toolCallId: `tool\r${ESC}[Hspoofed`,
         status: "completed",
       }),
     );
@@ -347,7 +355,7 @@ describe("createSessionUpdatePrinter", () => {
       makeNotification({
         sessionUpdate: "available_commands_update",
         availableCommands: [
-          { name: "help[2K", description: "d" },
+          { name: `help${ESC}[2K`, description: "d" },
           { name: "status", description: "d" },
         ],
       }),
@@ -368,7 +376,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: `before${highSurrogate}[2J${lowSurrogate}after` },
+        content: { type: "text", text: `before${highSurrogate}${ESC}[2J${lowSurrogate}after` },
       }),
     );
     expect(written.join("")).toBe("beforeafter");
@@ -415,7 +423,7 @@ describe("createSessionUpdatePrinter", () => {
       makeNotification({
         sessionUpdate: "agent_message_chunk",
         messageId: "msg-1",
-        content: { type: "text", text: "before[" },
+        content: { type: "text", text: `before${ESC}[` },
       }),
     );
     print(
@@ -438,7 +446,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "before[" },
+        content: { type: "text", text: `before${ESC}[` },
       }),
     );
     print(
@@ -461,7 +469,7 @@ describe("createSessionUpdatePrinter", () => {
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "before[" },
+        content: { type: "text", text: `before${ESC}[` },
       }),
     );
     print(
@@ -492,7 +500,7 @@ describe("createSessionUpdatePrinter", () => {
       print(
         makeNotification({
           sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: "before[" },
+          content: { type: "text", text: `before${ESC}[` },
         }),
       );
       print(
