@@ -289,9 +289,12 @@ function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null
  * sanitizeStrictSingleLineText, which escapes newlines instead of printing
  * them since those fields are never meant to span lines.
  */
-export function createSessionUpdatePrinter(
-  deps: SessionUpdatePrinterDeps = {},
-): ((notification: SessionNotification) => void) & { reset: () => void } {
+export function createSessionUpdatePrinter(deps: SessionUpdatePrinterDeps = {}): ((
+  notification: SessionNotification,
+) => void) & {
+  reset: () => void;
+  resetAnsiState: () => void;
+} {
   const write = deps.write ?? ((text: string) => process.stdout.write(text));
   const log = deps.log ?? ((line: string) => console.log(line));
   const sanitizeStream = createAcpChatTextSanitizer();
