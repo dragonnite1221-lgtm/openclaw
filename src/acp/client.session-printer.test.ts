@@ -277,13 +277,16 @@ describe("createSessionUpdatePrinter", () => {
   it("strips dangerous bidi override characters", () => {
     // U+202E (right-to-left override) is the classic "Trojan Source"-style
     // vector for making displayed text visually reorder away from its
-    // actual byte order.
+    // actual byte order. Built from its code point, not embedded literally:
+    // this test exists to catch exactly this spoofing vector, so the
+    // fixture itself must stay legible rather than risk the same effect.
+    const rlo = String.fromCodePoint(0x202e);
     const written: string[] = [];
     const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
     print(
       makeNotification({
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "safe‮reversed" },
+        content: { type: "text", text: `safe${rlo}reversed` },
       }),
     );
     expect(written.join("")).toBe("safereversed");
