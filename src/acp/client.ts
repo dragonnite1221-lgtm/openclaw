@@ -281,39 +281,27 @@ export function createSessionUpdatePrinter(
   const sanitizeStream = createAcpChatTextSanitizer();
   const printSessionUpdate = (notification: SessionNotification): void => {
     const update = notification.update;
+    if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
+      write(sanitizeStream(update.content.text, update.messageId));
+      return;
+    }
+    // Every other notification variant is a real break in the rendered
+    // agent_message_chunk text stream: a non-text content block (image,
+    // audio, resource) within the same message, a thought or user-echo
+    // chunk, a tool event, a plan/mode update, or anything not yet
+    // defined by the protocol. Resetting unconditionally here -- rather
+    // than enumerating every case that needs it -- means a dangling
+    // escape sequence or surrogate half can never bridge across ANY of
+    // them into an unrelated, non-adjacent chunk of message text.
+    sanitizeStream.reset();
     switch (update.sessionUpdate) {
-      case "agent_message_chunk": {
-        if (update.content?.type === "text") {
-          write(sanitizeStream(update.content.text, update.messageId));
-        } else {
-          // ACP permits image, audio, and resource content blocks within
-          // the same message. A non-text block is a real break in the
-          // rendered text stream -- reset so text before and after it
-          // can't be treated as adjacent (a pending escape sequence or
-          // surrogate half bridging across an unrelated image would
-          // otherwise corrupt or fabricate a character).
-          sanitizeStream.reset();
-        }
-        return;
-      }
       case "tool_call": {
-        // A tool_call is a real, visible interruption of the message-chunk
-        // stream: it logs its own line rather than continuing the current
-        // one. An escape sequence or surrogate half left dangling from
-        // before the interruption must not reach across it and corrupt
-        // text belonging to a new, unrelated chunk.
-        sanitizeStream.reset();
         log(
           `\n[tool] ${sanitizeStrictSingleLineText(update.title)} (${sanitizeStrictSingleLineText(update.status ?? "unknown")})`,
         );
         return;
       }
       case "tool_call_update": {
-        // ACP only requires toolCallId on this event -- status is commonly
-        // absent on progress-only updates. Reset unconditionally: this is
-        // still a real tool lifecycle event interrupting the message-chunk
-        // stream even when this renderer has nothing to print for it.
-        sanitizeStream.reset();
         if (update.status) {
           log(
             `[tool update] ${sanitizeStrictSingleLineText(update.toolCallId)}: ${sanitizeStrictSingleLineText(update.status)}`,
@@ -326,7 +314,6 @@ export function createSessionUpdatePrinter(
           ?.map((cmd) => `/${sanitizeStrictSingleLineText(cmd.name)}`)
           .join(" ");
         if (names) {
-          sanitizeStream.reset();
           log(`\n[commands] ${names}`);
         }
       }
@@ -410,7 +397,20 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
           printSessionUpdate(params);
         },
         requestPermission: async (params: RequestPermissionRequest) => {
-          return resolvePermissionRequest(params, { cwd });
+          // A permission prompt is printed through a completely separate
+          // channel (readline/console.error in resolvePermissionRequest,
+          // not this sanitizer's write/log) and can stay open awaiting
+          // input for a long time. It's a real, visible interruption of
+          // the message-chunk stream on either side of it -- reset both
+          // before (in case a chunk arrived just before this request came
+          // in) and after (so the prompt itself can't leave state for the
+          // next chunk to inherit).
+          printSessionUpdate.reset();
+          try {
+            return await resolvePermissionRequest(params, { cwd });
+          } finally {
+            printSessionUpdate.reset();
+          }
         },
       }),
       stream,

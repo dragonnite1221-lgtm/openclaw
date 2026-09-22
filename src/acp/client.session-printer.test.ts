@@ -475,4 +475,36 @@ describe("createSessionUpdatePrinter", () => {
     );
     expect(written.join("")).toBe("before2Jafter");
   });
+
+  it("resets pending sanitizer state when a thought or user-echo chunk interrupts the agent message stream", () => {
+    // user_message_chunk and agent_thought_chunk are distinct content
+    // streams from agent_message_chunk even though all three carry the
+    // same ContentChunk shape. Falling through the default branch without
+    // resetting would let a dangling escape sequence or surrogate half
+    // bridge across a thought or echoed user message into the next
+    // unrelated piece of assistant-visible text.
+    for (const sessionUpdate of ["user_message_chunk", "agent_thought_chunk"] as const) {
+      const written: string[] = [];
+      const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+      print(
+        makeNotification({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "before[" },
+        }),
+      );
+      print(
+        makeNotification({
+          sessionUpdate,
+          content: { type: "text", text: "ignored" },
+        }),
+      );
+      print(
+        makeNotification({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "2Jafter" },
+        }),
+      );
+      expect(written.join("")).toBe("before2Jafter");
+    }
+  });
 });
