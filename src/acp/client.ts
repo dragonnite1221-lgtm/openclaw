@@ -192,13 +192,17 @@ function stripUnpairedSurrogates(text: string): { validated: string; pending: st
  */
 function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null) => string) & {
   reset: () => void;
+  resetAnsiState: () => void;
 } {
   const ansiStripper = new AnsiSequenceStripper();
   let pendingHighSurrogate = "";
   let hasSeenChunk = false;
   let lastMessageId: string | null = null;
-  const doReset = () => {
+  const resetAnsiState = () => {
     ansiStripper.finish();
+  };
+  const fullReset = () => {
+    resetAnsiState();
     pendingHighSurrogate = "";
   };
   const sanitize = (rawText: string, messageId?: string | null) => {
@@ -212,7 +216,7 @@ function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null
     // concrete-to-concrete change.
     const normalizedMessageId = messageId ?? null;
     if (hasSeenChunk && normalizedMessageId !== lastMessageId) {
-      doReset();
+      fullReset();
     }
     hasSeenChunk = true;
     lastMessageId = normalizedMessageId;
@@ -254,10 +258,22 @@ function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null
   };
   return Object.assign(sanitize, {
     reset: () => {
-      doReset();
+      fullReset();
       hasSeenChunk = false;
       lastMessageId = null;
     },
+    // Clears only the ANSI parser's buffered escape-sequence bytes, not the
+    // pending surrogate half or the tracked messageId. Used for real,
+    // VISIBLE interruptions (a tool event or permission prompt prints
+    // through a different channel that lands on the same terminal) where
+    // an escape sequence split across the interruption would render
+    // wrong regardless of message continuity -- but a same-messageId
+    // interruption is still one logical ACP message, and dropping a
+    // pending surrogate here would lose a character split across it for
+    // no reason. The next agent_message_chunk's own messageId comparison
+    // still decides whether the message actually changed and a full
+    // reset (including the surrogate) is warranted.
+    resetAnsiState,
   });
 }
 
@@ -285,15 +301,20 @@ export function createSessionUpdatePrinter(
       write(sanitizeStream(update.content.text, update.messageId));
       return;
     }
-    // Every other notification variant is a real break in the rendered
-    // agent_message_chunk text stream: a non-text content block (image,
-    // audio, resource) within the same message, a thought or user-echo
-    // chunk, a tool event, a plan/mode update, or anything not yet
-    // defined by the protocol. Resetting unconditionally here -- rather
-    // than enumerating every case that needs it -- means a dangling
-    // escape sequence or surrogate half can never bridge across ANY of
-    // them into an unrelated, non-adjacent chunk of message text.
-    sanitizeStream.reset();
+    // Every other notification variant is a real, VISIBLE break in the
+    // rendered agent_message_chunk text stream: a non-text content block
+    // (image, audio, resource) within the same message, a thought or
+    // user-echo chunk, a tool event, a plan/mode update, or anything not
+    // yet defined by the protocol. Reset the ANSI parser only (not the
+    // pending surrogate or tracked messageId) -- an escape sequence split
+    // across a visible interruption would render wrong on screen
+    // regardless of message continuity, but ACP allows tool events to
+    // interleave within one logical message (same messageId), and a
+    // surrogate half legitimately spanning that interruption shouldn't be
+    // dropped just because something else happened in between. The next
+    // agent_message_chunk's own messageId comparison still performs a
+    // full reset if the message actually changed.
+    sanitizeStream.resetAnsiState();
     switch (update.sessionUpdate) {
       case "tool_call": {
         log(
@@ -329,6 +350,12 @@ export function createSessionUpdatePrinter(
     // prompt() call is a new response from the agent.
     reset: () => {
       sanitizeStream.reset();
+    },
+    // See sanitizeStream.resetAnsiState: for interruptions (like a
+    // permission prompt) that are visible on screen but may still belong
+    // to the same in-progress ACP message.
+    resetAnsiState: () => {
+      sanitizeStream.resetAnsiState();
     },
   });
 }
@@ -401,15 +428,18 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
           // channel (readline/console.error in resolvePermissionRequest,
           // not this sanitizer's write/log) and can stay open awaiting
           // input for a long time. It's a real, visible interruption of
-          // the message-chunk stream on either side of it -- reset both
-          // before (in case a chunk arrived just before this request came
-          // in) and after (so the prompt itself can't leave state for the
-          // next chunk to inherit).
-          printSessionUpdate.reset();
+          // the message-chunk stream on either side of it, so reset the
+          // ANSI parser both before (in case a chunk arrived just before
+          // this request came in) and after -- but not the pending
+          // surrogate or tracked messageId: the tool call this permission
+          // gates is typically part of the same in-progress ACP message,
+          // which can resume with the same messageId once the request
+          // resolves.
+          printSessionUpdate.resetAnsiState();
           try {
             return await resolvePermissionRequest(params, { cwd });
           } finally {
-            printSessionUpdate.reset();
+            printSessionUpdate.resetAnsiState();
           }
         },
       }),

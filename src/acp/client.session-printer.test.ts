@@ -518,4 +518,74 @@ describe("createSessionUpdatePrinter", () => {
       expect(written.join("")).toBe("before2Jafter");
     }
   });
+
+  it("preserves a pending surrogate across a same-message tool interruption", () => {
+    // ACP tool events can interleave within one logical message (same
+    // messageId). A high surrogate legitimately split across such an
+    // interruption is not the same as a message actually ending, so it
+    // must not be dropped just because a tool_call happened in between.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "ls",
+        status: "pending",
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe(`before${grinningFace}after`);
+  });
+
+  it("still drops a pending surrogate when messageId changes across a tool interruption", () => {
+    // The same-message preservation above must not become a blanket
+    // "never reset the surrogate on interruption" rule: if the message
+    // actually changed, the next chunk's own messageId comparison should
+    // still perform a full reset.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "ls",
+        status: "pending",
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-2",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
 });
