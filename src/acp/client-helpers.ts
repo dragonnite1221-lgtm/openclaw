@@ -5,7 +5,7 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import { sanitizeStrictSingleLineText } from "../../packages/terminal-core/src/safe-text.js";
 import {
   materializeWindowsSpawnProgram,
   resolveWindowsSpawnProgram,
@@ -111,7 +111,7 @@ export async function resolvePermissionRequest(
   const prompt = deps.prompt ?? promptUserPermission;
   const cwd = deps.cwd ?? process.cwd();
   const options = params.options ?? [];
-  const toolTitle = sanitizeTerminalText(params.toolCall?.title ?? "tool");
+  const toolTitle = sanitizeStrictSingleLineText(params.toolCall?.title ?? "tool");
   const classification = classifyAcpToolApproval({ toolCall: params.toolCall, cwd });
   const toolName = classification.toolName;
   const toolKind = resolveToolKindForPermission(toolName, classification.approvalClass);
@@ -121,17 +121,31 @@ export async function resolvePermissionRequest(
     return cancelledPermission();
   }
 
-  const allowOption = pickOption(options, ["allow_once", "allow_always"]);
+  // Only ever select allow_once, both here and below: neither an
+  // auto-approve decision nor a plain "Allow ...? (y/N)" confirmation
+  // communicates that a request is being granted BEYOND this one call, so
+  // silently falling back to allow_always when allow_once is absent would
+  // extend trust past what was actually confirmed. A persistent grant
+  // requires its own explicit, scope-aware approval flow -- not a mix-up
+  // fallback from a one-time question. Declining is always safe to persist
+  // (reject_always never grants anything), so that fallback stays.
+  const allowOnceOption = pickOption(options, ["allow_once"]);
   const rejectOption = pickOption(options, ["reject_once", "reject_always"]);
   const promptRequired = !classification.autoApprove;
 
+  // Checked before EITHER path proceeds: if there is no way to honor an
+  // approval at all, prompting the user with "Allow ...? (y/N)" and then
+  // discarding a "yes" answer as cancelled is a dead end that contradicts
+  // the question just asked. Cancel immediately instead, the same way the
+  // auto-approve path already did.
+  if (!allowOnceOption) {
+    log(`[permission cancelled] ${toolName ?? "unknown"}: missing allow_once option`);
+    return cancelledPermission();
+  }
+
   if (!promptRequired) {
-    if (!allowOption) {
-      log(`[permission cancelled] ${toolName ?? "unknown"}: missing allow option`);
-      return cancelledPermission();
-    }
     log(`[permission auto-approved] ${toolName} (${toolKind ?? "unknown"})`);
-    return selectedPermission(allowOption.optionId);
+    return selectedPermission(allowOnceOption.optionId);
   }
 
   log(
@@ -139,16 +153,14 @@ export async function resolvePermissionRequest(
   );
   const approved = await prompt(toolName, toolTitle);
 
-  if (approved && allowOption) {
-    return selectedPermission(allowOption.optionId);
+  if (approved) {
+    return selectedPermission(allowOnceOption.optionId);
   }
-  if (!approved && rejectOption) {
+  if (rejectOption) {
     return selectedPermission(rejectOption.optionId);
   }
 
-  log(
-    `[permission cancelled] ${toolName ?? "unknown"}: missing ${approved ? "allow" : "reject"} option`,
-  );
+  log(`[permission cancelled] ${toolName ?? "unknown"}: missing reject option`);
   return cancelledPermission();
 }
 

@@ -14,6 +14,11 @@ import {
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { AnsiSequenceStripper } from "../../packages/terminal-core/src/ansi-sequences.js";
+import {
+  DANGEROUS_BIDI_CONTROL_PATTERN,
+  sanitizeStrictSingleLineText,
+} from "../../packages/terminal-core/src/safe-text.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { killProcessTree, signalProcessTree } from "../process/kill-tree.js";
 import {
@@ -36,6 +41,7 @@ type AcpClientHandle = {
   client: ClientSideConnection;
   agent: ChildProcess;
   sessionId: string;
+  resetSessionUpdatePrinter: () => void;
 };
 
 const ACP_SERVER_KILL_GRACE_MS = 1000;
@@ -116,33 +122,268 @@ function resolveSelfEntryPath(): string | null {
   return null;
 }
 
-function printSessionUpdate(notification: SessionNotification): void {
-  const update = notification.update;
-  switch (update.sessionUpdate) {
-    case "agent_message_chunk": {
-      if (update.content?.type === "text") {
-        process.stdout.write(update.content.text);
+type SessionUpdatePrinterDeps = {
+  write?: (text: string) => void;
+  log?: (line: string) => void;
+};
+
+// A high surrogate is only genuinely part of a split character if it is
+// IMMEDIATELY followed, in the raw stream, by its matching low surrogate.
+// This must be checked with plain UTF-16 code units (charCodeAt), not
+// codePointAt, which would silently auto-combine an already-valid pair and
+// defeat the manual pairing check below.
+function isHighSurrogateUnit(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
+}
+function isLowSurrogateUnit(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff;
+}
+
+// A Unicode noncharacter, guaranteed by the standard to never appear in
+// valid text interchange. Used as an internal marker for a position a
+// confirmed-lone surrogate was removed from -- see stripUnpairedSurrogates.
+const LONE_SURROGATE_PLACEHOLDER = String.fromCodePoint(0xffff);
+
+/**
+ * Walks raw text one UTF-16 code unit at a time and keeps only surrogates
+ * that are genuinely adjacent to their pair IN THE RAW INPUT, replacing any
+ * lone surrogate with LONE_SURROGATE_PLACEHOLDER (except one trailing at
+ * the very end, which might complete across the next chunk and is returned
+ * as `pending`).
+ *
+ * This must run BEFORE any transformation that removes characters (ANSI
+ * stripping, bidi stripping): if it ran after, removing an escape sequence
+ * or bidi control that separated a high surrogate from an unrelated low
+ * surrogate would leave them newly adjacent, and a downstream check that
+ * only looks at the (already-stripped) result would mistake them for one
+ * real character the server never actually sent.
+ *
+ * A confirmed-lone surrogate is replaced rather than deleted outright for
+ * the mirror-image reason: outright deletion can weld two genuinely
+ * nonadjacent fragments on either side of it into something that newly
+ * LOOKS like a complete ANSI escape sequence once ansiStripper runs over
+ * the result (e.g. raw ESC + lone-surrogate + "[2J" is not really an ESC[2J
+ * sequence, but deleting the surrogate makes it look like one). The
+ * placeholder is inert to ansiStripper's parser -- any unrecognized
+ * character interrupts an escape sequence in progress -- so it correctly
+ * keeps the two fragments apart, and it's stripped from the final output
+ * after ANSI parsing runs.
+ */
+function stripUnpairedSurrogates(text: string): { validated: string; pending: string } {
+  let validated = "";
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (isHighSurrogateUnit(unit)) {
+      const nextUnit = i + 1 < text.length ? text.charCodeAt(i + 1) : undefined;
+      if (nextUnit !== undefined && isLowSurrogateUnit(nextUnit)) {
+        validated += text.charAt(i) + text.charAt(i + 1);
+        i++;
+        continue;
       }
-      return;
-    }
-    case "tool_call": {
-      console.log(`\n[tool] ${update.title} (${update.status})`);
-      return;
-    }
-    case "tool_call_update": {
-      if (update.status) {
-        console.log(`[tool update] ${update.toolCallId}: ${update.status}`);
+      if (i === text.length - 1) {
+        // Might be the first half of a character split across the next
+        // chunk boundary -- hold it rather than treating it as lone yet.
+        return { validated, pending: text.charAt(i) };
       }
-      return;
+      validated += LONE_SURROGATE_PLACEHOLDER; // provably lone
+      continue;
     }
-    case "available_commands_update": {
-      const names = update.availableCommands?.map((cmd) => `/${cmd.name}`).join(" ");
-      if (names) {
-        console.log(`\n[commands] ${names}`);
-      }
+    if (isLowSurrogateUnit(unit)) {
+      validated += LONE_SURROGATE_PLACEHOLDER; // any real pair was already consumed above
+      continue;
     }
-    default:
+    validated += text.charAt(i);
   }
+  return { validated, pending: "" };
+}
+
+/**
+ * Sanitizes one connection's untrusted agent_message_chunk text: ANSI/C1
+ * escape sequences via a stateful AnsiSequenceStripper (state carried across
+ * calls, so a sequence split across two notification chunks still gets
+ * caught), then per-character handling for whatever isn't part of a
+ * recognized escape sequence. Unlike shell-utils.ts's
+ * createStreamingBinaryOutputSanitizer (built for process output, where
+ * \r is a legitimate progress-bar character and stripping the whole Unicode
+ * Format category is harmless), this keeps real newlines and format
+ * characters intact and only removes \r and the shared dangerous-bidi
+ * pattern (see safe-text.ts).
+ */
+function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null) => string) & {
+  reset: () => void;
+  resetAnsiState: () => void;
+} {
+  const ansiStripper = new AnsiSequenceStripper();
+  let pendingHighSurrogate = "";
+  let hasSeenChunk = false;
+  let lastMessageId: string | null = null;
+  const resetAnsiState = () => {
+    ansiStripper.finish();
+  };
+  const fullReset = () => {
+    resetAnsiState();
+    pendingHighSurrogate = "";
+  };
+  const sanitize = (rawText: string, messageId?: string | null) => {
+    // ACP defines a changed messageId as a new message starting -- reset
+    // first so a dangling escape sequence or surrogate half from a
+    // previous message can't bleed into this one. `null` and `undefined`
+    // are normalized to the same sentinel: a backend that never populates
+    // messageId at all stays consistently "absent" and never triggers a
+    // false reset, but a backend that only *sometimes* populates it still
+    // gets a reset on the presence transition itself, not just on a
+    // concrete-to-concrete change.
+    const normalizedMessageId = messageId ?? null;
+    if (hasSeenChunk && normalizedMessageId !== lastMessageId) {
+      fullReset();
+    }
+    hasSeenChunk = true;
+    lastMessageId = normalizedMessageId;
+
+    // See stripUnpairedSurrogates: pending is prepended unconditionally
+    // and re-validated from scratch, since a surrogate held from the
+    // previous chunk is just as subject to this chunk's own raw adjacency
+    // check as any surrogate that arrives fresh.
+    const { validated, pending } = stripUnpairedSurrogates(pendingHighSurrogate + rawText);
+    pendingHighSurrogate = pending;
+
+    const withoutAnsi = ansiStripper.write(validated);
+    // Removed only after ANSI parsing runs, not before: see
+    // LONE_SURROGATE_PLACEHOLDER's own comment for why the placeholder
+    // must stay in place as an inert "wall" while ansiStripper parses.
+    const withoutPlaceholders = withoutAnsi.replaceAll(LONE_SURROGATE_PLACEHOLDER, "");
+    const withoutBidiOverrides = withoutPlaceholders.replace(DANGEROUS_BIDI_CONTROL_PATTERN, "");
+    if (!withoutBidiOverrides) {
+      return withoutBidiOverrides;
+    }
+    const chunks: string[] = [];
+    for (const char of withoutBidiOverrides) {
+      const code = char.codePointAt(0);
+      if (code == null) {
+        continue;
+      }
+      if (code === 0x0a || code === 0x09) {
+        chunks.push(char);
+        continue;
+      }
+      if (code === 0x0d) {
+        // No legitimate use in chat prose; a bare \r left in place would
+        // let a server overwrite the start of the current terminal line.
+        continue;
+      }
+      if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
+        chunks.push(`\\x${code.toString(16).padStart(2, "0")}`);
+        continue;
+      }
+      chunks.push(char);
+    }
+    return chunks.join("");
+  };
+  return Object.assign(sanitize, {
+    reset: () => {
+      fullReset();
+      hasSeenChunk = false;
+      lastMessageId = null;
+    },
+    // Clears only the ANSI parser's buffered escape-sequence bytes, not the
+    // pending surrogate half or the tracked messageId. Used for real,
+    // VISIBLE interruptions (a tool event or permission prompt prints
+    // through a different channel that lands on the same terminal) where
+    // an escape sequence split across the interruption would render
+    // wrong regardless of message continuity -- but a same-messageId
+    // interruption is still one logical ACP message, and dropping a
+    // pending surrogate here would lose a character split across it for
+    // no reason. The next agent_message_chunk's own messageId comparison
+    // still decides whether the message actually changed and a full
+    // reset (including the surrogate) is warranted.
+    resetAnsiState,
+  });
+}
+
+/**
+ * A remote ACP server's notifications are untrusted input: without
+ * sanitization, a tool title, status, or streamed message chunk containing
+ * terminal control sequences (screen clear, cursor movement) could overwrite
+ * or hide what's already on screen. Multi-line message text keeps real
+ * newlines (and legitimate format characters like emoji ZWJ sequences) via
+ * a stateful, cross-chunk-safe sanitizer (one per connection, so a sequence
+ * deliberately split across chunk boundaries still gets caught); single-line
+ * fields (titles, ids, status, command names) go through
+ * sanitizeStrictSingleLineText, which escapes newlines instead of printing
+ * them since those fields are never meant to span lines.
+ */
+export function createSessionUpdatePrinter(deps: SessionUpdatePrinterDeps = {}): ((
+  notification: SessionNotification,
+) => void) & {
+  reset: () => void;
+  resetAnsiState: () => void;
+} {
+  const write = deps.write ?? ((text: string) => process.stdout.write(text));
+  const log = deps.log ?? ((line: string) => console.log(line));
+  const sanitizeStream = createAcpChatTextSanitizer();
+  const printSessionUpdate = (notification: SessionNotification): void => {
+    const update = notification.update;
+    if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
+      write(sanitizeStream(update.content.text, update.messageId));
+      return;
+    }
+    // Every other notification variant is a real, VISIBLE break in the
+    // rendered agent_message_chunk text stream: a non-text content block
+    // (image, audio, resource) within the same message, a thought or
+    // user-echo chunk, a tool event, a plan/mode update, or anything not
+    // yet defined by the protocol. Reset the ANSI parser only (not the
+    // pending surrogate or tracked messageId) -- an escape sequence split
+    // across a visible interruption would render wrong on screen
+    // regardless of message continuity, but ACP allows tool events to
+    // interleave within one logical message (same messageId), and a
+    // surrogate half legitimately spanning that interruption shouldn't be
+    // dropped just because something else happened in between. The next
+    // agent_message_chunk's own messageId comparison still performs a
+    // full reset if the message actually changed.
+    sanitizeStream.resetAnsiState();
+    switch (update.sessionUpdate) {
+      case "tool_call": {
+        log(
+          `\n[tool] ${sanitizeStrictSingleLineText(update.title)} (${sanitizeStrictSingleLineText(update.status ?? "unknown")})`,
+        );
+        return;
+      }
+      case "tool_call_update": {
+        if (update.status) {
+          log(
+            `[tool update] ${sanitizeStrictSingleLineText(update.toolCallId)}: ${sanitizeStrictSingleLineText(update.status)}`,
+          );
+        }
+        return;
+      }
+      case "available_commands_update": {
+        const names = update.availableCommands
+          ?.map((cmd) => `/${sanitizeStrictSingleLineText(cmd.name)}`)
+          .join(" ");
+        if (names) {
+          log(`\n[commands] ${names}`);
+        }
+      }
+      default:
+    }
+  };
+  return Object.assign(printSessionUpdate, {
+    // Clears the sanitizer's ANSI-parse state and any pending surrogate
+    // half. Without this, an incomplete escape sequence or split surrogate
+    // left dangling at the end of one prompt's response would silently
+    // consume or corrupt the start of the next turn's text -- two
+    // genuinely unrelated streams, not one continuous one, since a new
+    // prompt() call is a new response from the agent.
+    reset: () => {
+      sanitizeStream.reset();
+    },
+    // See sanitizeStream.resetAnsiState: for interruptions (like a
+    // permission prompt) that are visible on screen but may still belong
+    // to the same in-progress ACP message.
+    resetAnsiState: () => {
+      sanitizeStream.resetAnsiState();
+    },
+  });
 }
 
 async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHandle> {
@@ -201,6 +442,7 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
     const input = Writable.toWeb(agent.stdin);
     const output = Readable.toWeb(agent.stdout) as unknown as ReadableStream<Uint8Array>;
     const stream = ndJsonStream(input, output);
+    const printSessionUpdate = createSessionUpdatePrinter();
 
     const client = new ClientSideConnection(
       () => ({
@@ -208,7 +450,23 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
           printSessionUpdate(params);
         },
         requestPermission: async (params: RequestPermissionRequest) => {
-          return resolvePermissionRequest(params, { cwd });
+          // A permission prompt is printed through a completely separate
+          // channel (readline/console.error in resolvePermissionRequest,
+          // not this sanitizer's write/log) and can stay open awaiting
+          // input for a long time. It's a real, visible interruption of
+          // the message-chunk stream on either side of it, so reset the
+          // ANSI parser both before (in case a chunk arrived just before
+          // this request came in) and after -- but not the pending
+          // surrogate or tracked messageId: the tool call this permission
+          // gates is typically part of the same in-progress ACP message,
+          // which can resume with the same messageId once the request
+          // resolves.
+          printSessionUpdate.resetAnsiState();
+          try {
+            return await resolvePermissionRequest(params, { cwd });
+          } finally {
+            printSessionUpdate.resetAnsiState();
+          }
         },
       }),
       stream,
@@ -217,10 +475,12 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
     log("initializing");
     await client.initialize({
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {
-        fs: { readTextFile: true, writeTextFile: true },
-        terminal: true,
-      },
+      // The client object above only implements sessionUpdate and
+      // requestPermission -- no fs/read_text_file, fs/write_text_file, or
+      // terminal/* handlers exist, so advertising those capabilities would
+      // let a server delegate work this client can't actually perform.
+      // Both fields are optional; omitting them means "not supported."
+      clientCapabilities: {},
       clientInfo: { name: "openclaw-acp-client", version: "1.0.0" },
     });
 
@@ -234,6 +494,7 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
       client,
       agent,
       sessionId: session.sessionId,
+      resetSessionUpdatePrinter: printSessionUpdate.reset,
     };
   } catch (error) {
     await terminateAcpServer(agent);
@@ -243,7 +504,7 @@ async function createAcpClient(opts: AcpClientOptions = {}): Promise<AcpClientHa
 
 /** Starts the terminal prompt loop for a local ACP client session. */
 export async function runAcpClientInteractive(opts: AcpClientOptions = {}): Promise<void> {
-  const { client, agent, sessionId } = await createAcpClient(opts);
+  const { client, agent, sessionId, resetSessionUpdatePrinter } = await createAcpClient(opts);
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -276,6 +537,14 @@ export async function runAcpClientInteractive(opts: AcpClientOptions = {}): Prom
           console.log(`\n[${response.stopReason}]\n`);
         } catch (err) {
           console.error(`\n[error] ${String(err)}\n`);
+        } finally {
+          // Each prompt() call is a new, independent response from the
+          // agent -- an incomplete escape sequence or split surrogate left
+          // dangling at the end of one turn's text must not leak into and
+          // corrupt the start of the next. Reset regardless of success or
+          // failure, since a mid-stream error can leave the same kind of
+          // dangling state behind.
+          resetSessionUpdatePrinter();
         }
 
         prompt();

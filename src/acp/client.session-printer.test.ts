@@ -1,0 +1,614 @@
+/** Tests ACP session-update printing: streamed-text sanitization and single-line field escaping. */
+import type { SessionNotification } from "@agentclientprotocol/sdk";
+import { describe, expect, it } from "vitest";
+import { createSessionUpdatePrinter } from "./client.js";
+
+// Built from its code point rather than embedded literally: a raw ESC byte
+// in this file's source would let ordinary terminal tools (cat, a naive
+// pager) actually execute the CSI sequences these fixtures construct
+// (clear screen, cursor movement) when displaying the file or its diff --
+// exactly the kind of terminal-control injection this module's sanitizer
+// exists to catch.
+const ESC = String.fromCharCode(0x1b);
+
+describe("createSessionUpdatePrinter", () => {
+  function makeNotification(update: SessionNotification["update"]): SessionNotification {
+    return { sessionId: "session-1", update };
+  }
+
+  it("preserves real newlines in streamed agent message text", () => {
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "line one\nline two" },
+      }),
+    );
+    expect(written.join("")).toBe("line one\nline two");
+  });
+
+  it("strips a terminal control sequence from streamed agent message text", () => {
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${ESC}[2J${ESC}[Hafter` },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
+  it("strips a bare carriage return that would overwrite the current line", () => {
+    // createStreamingBinaryOutputSanitizer deliberately preserves \r for its
+    // other caller (shell progress bars); an ACP chat message has no such
+    // legitimate use, and a bare \r left in place would let a server
+    // overwrite already-printed text on the same line.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "safe\rspoofed" },
+      }),
+    );
+    expect(written.join("")).toBe("safespoofed");
+  });
+
+  it("keeps a real CRLF line ending as a plain newline, even split across chunks", () => {
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "line one\r" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "\nline two" },
+      }),
+    );
+    expect(written.join("")).toBe("line one\nline two");
+  });
+
+  it("preserves emoji ZWJ sequences and other legitimate format characters", () => {
+    // A blanket Unicode Format-category strip (as shell output sanitization
+    // uses) would split this into two separate emoji by removing the U+200D
+    // zero-width joiner that combines them into one composed glyph.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const womanTechnologist = "\u{1F469}‍\u{1F4BB}";
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `hello ${womanTechnologist} world` },
+      }),
+    );
+    expect(written.join("")).toBe(`hello ${womanTechnologist} world`);
+  });
+
+  it("preserves an astral character split across two notification chunks", () => {
+    // A server could send an emoji's high surrogate at the very end of one
+    // chunk and its low surrogate at the start of the next. Treating each
+    // chunk's surrogate independently (both "unpaired" on their own) would
+    // silently delete the character entirely instead of reassembling it.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe(`before${grinningFace}after`);
+  });
+
+  it("drops a high surrogate that turns out to be genuinely unpaired", () => {
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const loneHighSurrogate = "\u{1F600}".charAt(0);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${loneHighSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "not-a-low-surrogate" },
+      }),
+    );
+    expect(written.join("")).toBe("beforenot-a-low-surrogate");
+  });
+
+  it("does not synthesize an astral character across an ANSI sequence and an unrelated later chunk", () => {
+    // Surrogate adjacency must be judged on the RAW stream, not on the
+    // ANSI-stripped result: this high surrogate is immediately followed by
+    // an ANSI clear-screen sequence in the actual data, never by anything
+    // that could pair with it. Deciding adjacency AFTER stripping would
+    // make it look like it ends the chunk, and combining it with an
+    // unrelated low surrogate from a later chunk would fabricate a
+    // character (here, an emoji) that the server never actually sent.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `safe${highSurrogate}${ESC}[2J` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe("safeafter");
+  });
+
+  it("reset() clears pending ANSI and surrogate state between prompt turns", () => {
+    // Each prompt() call is a new, independent response from the agent --
+    // an incomplete escape sequence or dangling surrogate half left at the
+    // end of one turn must not leak into and corrupt the next.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `first turn${ESC}[` },
+      }),
+    );
+    print.reset();
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "2Jsecond turn" },
+      }),
+    );
+    // Without the reset, "2J" would be consumed as the pending CSI's
+    // terminator instead of printed as ordinary text.
+    expect(written.join("")).toBe("first turn2Jsecond turn");
+  });
+
+  it("resets pending message-chunk sanitizer state when a tool_call interrupts the stream", () => {
+    // A tool_call notification is a real, visible interruption of the
+    // agent_message_chunk stream (it logs its own line via `log`, not
+    // `write`). An escape sequence left half-parsed from before the
+    // interruption must not silently reach across it and consume text
+    // belonging to a new, unrelated chunk of message content.
+    const written: string[] = [];
+    const lines: string[] = [];
+    const print = createSessionUpdatePrinter({
+      write: (text) => written.push(text),
+      log: (line) => lines.push(line),
+    });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${ESC}[` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "ls",
+        status: "pending",
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    // Without the reset, "2J" would be consumed as the dangling CSI's
+    // terminator instead of printed as ordinary text.
+    expect(written.join("")).toBe("before2Jafter");
+  });
+
+  it("resets pending message-chunk sanitizer state when a statusless tool_call_update interrupts the stream", () => {
+    // A tool_call_update only requires toolCallId (ACP), so status is
+    // frequently absent on progress-only updates. The reset must still
+    // happen -- treating "no status" as "no interruption occurred" would
+    // let a dangling escape sequence reach across a real tool lifecycle
+    // event just because this renderer happens not to print anything for
+    // that particular event shape.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${ESC}[` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-1",
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("before2Jafter");
+  });
+
+  it("does not synthesize an astral character when an ANSI sequence spans the pending-surrogate boundary itself", () => {
+    // The high surrogate is legitimately held pending because it is the
+    // very last code unit of this chunk. But the next chunk does NOT open
+    // with its low surrogate -- it opens with an ANSI escape sequence.
+    // That escape sequence must not be allowed to get stripped and leave
+    // the pending high surrogate newly adjacent to a low surrogate that
+    // arrives after it: they were never adjacent in the raw stream, and
+    // synthesizing a character from them would fabricate content the
+    // server never actually sent.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `${ESC}[2J${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
+  it("strips dangerous bidi override characters", () => {
+    // U+202E (right-to-left override) is the classic "Trojan Source"-style
+    // vector for making displayed text visually reorder away from its
+    // actual byte order. Built from its code point, not embedded literally:
+    // this test exists to catch exactly this spoofing vector, so the
+    // fixture itself must stay legible rather than risk the same effect.
+    const rlo = String.fromCodePoint(0x202e);
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `safe${rlo}reversed` },
+      }),
+    );
+    expect(written.join("")).toBe("safereversed");
+  });
+
+  it("strips a control sequence deliberately split across two chunks", () => {
+    // A malicious or buggy server could send the escape introducer in one
+    // notification and the rest of the sequence in the next, hoping a
+    // per-chunk-only filter lets both halves through unsanitized.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${ESC}[2` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
+  it("sanitizes a tool_call title", () => {
+    const lines: string[] = [];
+    const print = createSessionUpdatePrinter({ log: (line) => lines.push(line) });
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: `exec${ESC}[2Jclear screen`,
+        status: "pending",
+      }),
+    );
+    expect(lines).toEqual(["\n[tool] execclear screen (pending)"]);
+  });
+
+  it("sanitizes a tool_call_update's toolCallId and status", () => {
+    const lines: string[] = [];
+    const print = createSessionUpdatePrinter({ log: (line) => lines.push(line) });
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call_update",
+        toolCallId: `tool\r${ESC}[Hspoofed`,
+        status: "completed",
+      }),
+    );
+    expect(lines).toEqual(["[tool update] tool\\rspoofed: completed"]);
+  });
+
+  it("sanitizes command names in available_commands_update", () => {
+    const lines: string[] = [];
+    const print = createSessionUpdatePrinter({ log: (line) => lines.push(line) });
+    print(
+      makeNotification({
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          { name: `help${ESC}[2K`, description: "d" },
+          { name: "status", description: "d" },
+        ],
+      }),
+    );
+    expect(lines).toEqual(["\n[commands] /help /status"]);
+  });
+
+  it("does not synthesize an astral character from a surrogate and an unrelated escape sequence within one chunk", () => {
+    // Same fabrication risk as the cross-chunk case, but entirely within a
+    // single notification: the high surrogate and low surrogate are only
+    // adjacent in the ANSI-stripped result, never in the raw text the
+    // server actually sent.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${highSurrogate}${ESC}[2J${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
+  it("keeps a pending surrogate alive across an intervening empty chunk", () => {
+    // ACP permits an empty text string. A high surrogate held pending from
+    // the previous chunk must survive an empty chunk in between rather
+    // than being dropped just because there was nothing to check it
+    // against yet.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe(`before${grinningFace}after`);
+  });
+
+  it("resets pending sanitizer state when messageId changes, even without an intervening tool event", () => {
+    // ACP defines a changed messageId as a new message starting. A
+    // dangling escape sequence from one message must not reach into the
+    // next just because nothing else happened to interrupt the stream.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: `before${ESC}[` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-2",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("before2Jafter");
+  });
+
+  it("resets pending sanitizer state when messageId transitions between absent and present", () => {
+    // A concrete-to-concrete change isn't the only way messageId can
+    // signal a new message: a backend might only sometimes populate it.
+    // The transition itself must reset, not just a change between two
+    // concrete values.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${ESC}[` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("before2Jafter");
+  });
+
+  it("resets pending sanitizer state when a non-text content block interrupts the message", () => {
+    // ACP permits image, audio, and resource blocks within one message.
+    // Text before and after one of these blocks is not adjacent in the
+    // rendered stream, even though both chunks share sessionUpdate
+    // "agent_message_chunk".
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${ESC}[` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "2Jafter" },
+      }),
+    );
+    expect(written.join("")).toBe("before2Jafter");
+  });
+
+  it("resets pending sanitizer state when a thought or user-echo chunk interrupts the agent message stream", () => {
+    // user_message_chunk and agent_thought_chunk are distinct content
+    // streams from agent_message_chunk even though all three carry the
+    // same ContentChunk shape. Falling through the default branch without
+    // resetting would let a dangling escape sequence or surrogate half
+    // bridge across a thought or echoed user message into the next
+    // unrelated piece of assistant-visible text.
+    for (const sessionUpdate of ["user_message_chunk", "agent_thought_chunk"] as const) {
+      const written: string[] = [];
+      const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+      print(
+        makeNotification({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `before${ESC}[` },
+        }),
+      );
+      print(
+        makeNotification({
+          sessionUpdate,
+          content: { type: "text", text: "ignored" },
+        }),
+      );
+      print(
+        makeNotification({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "2Jafter" },
+        }),
+      );
+      expect(written.join("")).toBe("before2Jafter");
+    }
+  });
+
+  it("preserves a pending surrogate across a same-message tool interruption", () => {
+    // ACP tool events can interleave within one logical message (same
+    // messageId). A high surrogate legitimately split across such an
+    // interruption is not the same as a message actually ending, so it
+    // must not be dropped just because a tool_call happened in between.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "ls",
+        status: "pending",
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe(`before${grinningFace}after`);
+  });
+
+  it("still drops a pending surrogate when messageId changes across a tool interruption", () => {
+    // The same-message preservation above must not become a blanket
+    // "never reset the surrogate on interruption" rule: if the message
+    // actually changed, the next chunk's own messageId comparison should
+    // still perform a full reset.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const grinningFace = "\u{1F600}";
+    const highSurrogate = grinningFace.charAt(0);
+    const lowSurrogate = grinningFace.charAt(1);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-1",
+        content: { type: "text", text: `before${highSurrogate}` },
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "ls",
+        status: "pending",
+      }),
+    );
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg-2",
+        content: { type: "text", text: `${lowSurrogate}after` },
+      }),
+    );
+    expect(written.join("")).toBe("beforeafter");
+  });
+
+  it("does not fabricate an ANSI sequence by deleting a lone surrogate between its fragments", () => {
+    // The mirror image of the earlier "does not synthesize an astral
+    // character" tests: here a genuinely lone surrogate sits between an
+    // ESC byte and a bracket/digit/letter sequence that would form a
+    // complete CSI clear-screen command IF they were adjacent -- but they
+    // are not, in the raw stream, until the surrogate between them is
+    // removed. Outright deletion would weld them into a real "ESC[2J"
+    // that ansiStripper then recognizes and strips, silently destroying
+    // the literal "[2J" text (and whatever the lone surrogate represented)
+    // even though the server never actually sent an adjacent escape
+    // sequence.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const loneHighSurrogate = "\u{1F600}".charAt(0);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${ESC}${loneHighSurrogate}[2Jafter` },
+      }),
+    );
+    expect(written.join("")).toBe("before[2Jafter");
+  });
+});
