@@ -588,4 +588,27 @@ describe("createSessionUpdatePrinter", () => {
     );
     expect(written.join("")).toBe("beforeafter");
   });
+
+  it("does not fabricate an ANSI sequence by deleting a lone surrogate between its fragments", () => {
+    // The mirror image of the earlier "does not synthesize an astral
+    // character" tests: here a genuinely lone surrogate sits between an
+    // ESC byte and a bracket/digit/letter sequence that would form a
+    // complete CSI clear-screen command IF they were adjacent -- but they
+    // are not, in the raw stream, until the surrogate between them is
+    // removed. Outright deletion would weld them into a real "ESC[2J"
+    // that ansiStripper then recognizes and strips, silently destroying
+    // the literal "[2J" text (and whatever the lone surrogate represented)
+    // even though the server never actually sent an adjacent escape
+    // sequence.
+    const written: string[] = [];
+    const print = createSessionUpdatePrinter({ write: (text) => written.push(text) });
+    const loneHighSurrogate = "\u{1F600}".charAt(0);
+    print(
+      makeNotification({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `before${ESC}${loneHighSurrogate}[2Jafter` },
+      }),
+    );
+    expect(written.join("")).toBe("before[2Jafter");
+  });
 });

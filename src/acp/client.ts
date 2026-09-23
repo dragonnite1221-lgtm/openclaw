@@ -139,11 +139,17 @@ function isLowSurrogateUnit(unit: number): boolean {
   return unit >= 0xdc00 && unit <= 0xdfff;
 }
 
+// A Unicode noncharacter, guaranteed by the standard to never appear in
+// valid text interchange. Used as an internal marker for a position a
+// confirmed-lone surrogate was removed from -- see stripUnpairedSurrogates.
+const LONE_SURROGATE_PLACEHOLDER = String.fromCodePoint(0xffff);
+
 /**
  * Walks raw text one UTF-16 code unit at a time and keeps only surrogates
- * that are genuinely adjacent to their pair IN THE RAW INPUT, dropping any
- * lone surrogate immediately (except one trailing at the very end, which
- * might complete across the next chunk and is returned as `pending`).
+ * that are genuinely adjacent to their pair IN THE RAW INPUT, replacing any
+ * lone surrogate with LONE_SURROGATE_PLACEHOLDER (except one trailing at
+ * the very end, which might complete across the next chunk and is returned
+ * as `pending`).
  *
  * This must run BEFORE any transformation that removes characters (ANSI
  * stripping, bidi stripping): if it ran after, removing an escape sequence
@@ -151,6 +157,17 @@ function isLowSurrogateUnit(unit: number): boolean {
  * surrogate would leave them newly adjacent, and a downstream check that
  * only looks at the (already-stripped) result would mistake them for one
  * real character the server never actually sent.
+ *
+ * A confirmed-lone surrogate is replaced rather than deleted outright for
+ * the mirror-image reason: outright deletion can weld two genuinely
+ * nonadjacent fragments on either side of it into something that newly
+ * LOOKS like a complete ANSI escape sequence once ansiStripper runs over
+ * the result (e.g. raw ESC + lone-surrogate + "[2J" is not really an ESC[2J
+ * sequence, but deleting the surrogate makes it look like one). The
+ * placeholder is inert to ansiStripper's parser -- any unrecognized
+ * character interrupts an escape sequence in progress -- so it correctly
+ * keeps the two fragments apart, and it's stripped from the final output
+ * after ANSI parsing runs.
  */
 function stripUnpairedSurrogates(text: string): { validated: string; pending: string } {
   let validated = "";
@@ -168,10 +185,12 @@ function stripUnpairedSurrogates(text: string): { validated: string; pending: st
         // chunk boundary -- hold it rather than treating it as lone yet.
         return { validated, pending: text.charAt(i) };
       }
-      continue; // not at the end and not followed by its match: provably lone
+      validated += LONE_SURROGATE_PLACEHOLDER; // provably lone
+      continue;
     }
     if (isLowSurrogateUnit(unit)) {
-      continue; // any real pair was already consumed by the branch above
+      validated += LONE_SURROGATE_PLACEHOLDER; // any real pair was already consumed above
+      continue;
     }
     validated += text.charAt(i);
   }
@@ -229,7 +248,11 @@ function createAcpChatTextSanitizer(): ((text: string, messageId?: string | null
     pendingHighSurrogate = pending;
 
     const withoutAnsi = ansiStripper.write(validated);
-    const withoutBidiOverrides = withoutAnsi.replace(DANGEROUS_BIDI_CONTROL_PATTERN, "");
+    // Removed only after ANSI parsing runs, not before: see
+    // LONE_SURROGATE_PLACEHOLDER's own comment for why the placeholder
+    // must stay in place as an inert "wall" while ansiStripper parses.
+    const withoutPlaceholders = withoutAnsi.replaceAll(LONE_SURROGATE_PLACEHOLDER, "");
+    const withoutBidiOverrides = withoutPlaceholders.replace(DANGEROUS_BIDI_CONTROL_PATTERN, "");
     if (!withoutBidiOverrides) {
       return withoutBidiOverrides;
     }

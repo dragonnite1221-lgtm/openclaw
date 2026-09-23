@@ -22,6 +22,10 @@ const LRM = String.fromCodePoint(0x200e); // left-to-right mark
 const RLM = String.fromCodePoint(0x200f); // right-to-left mark
 const ALM = String.fromCodePoint(0x061c); // Arabic letter mark
 const ZWJ = String.fromCodePoint(0x200d); // zero-width joiner
+const LRI = String.fromCodePoint(0x2066); // left-to-right isolate
+const PDI = String.fromCodePoint(0x2069); // pop directional isolate
+const LS = String.fromCodePoint(0x2028); // line separator
+const PS = String.fromCodePoint(0x2029); // paragraph separator
 
 describe("hasTerminalControl", () => {
   it.each([
@@ -64,16 +68,28 @@ describe("sanitizeTerminalText", () => {
     expect(sanitizeTerminalText(`safe${RLO}reversed`)).toBe("safereversed");
   });
 
-  it("preserves simple direction marks and joiners", () => {
+  it("preserves simple direction marks, joiners, and isolates", () => {
     // sanitizeTerminalText is shared by callers that render arbitrary
     // prose (CLI messages, transcript utterances), so it keeps only the
-    // override/isolate subset -- ZWJ/ZWNJ (needed for emoji sequences and
-    // script shaping) and simple LRM/RLM marks (needed for ordinary
-    // mixed-direction text) are left alone since neither reorders anything
-    // beyond itself. See sanitizeStrictSingleLineText for callers that
-    // need the full Bidi_Control set stripped.
+    // unbounded-reordering override subset -- ZWJ/ZWNJ (needed for emoji
+    // sequences and script shaping), simple LRM/RLM marks (needed for
+    // ordinary mixed-direction text), and isolates (the Unicode-recommended
+    // way to embed a phone number or foreign name inside otherwise RTL
+    // prose, since a PDI always bounds their effect to the isolated span)
+    // are left alone since none of them reorder anything beyond
+    // themselves or their own bounded span. See sanitizeStrictSingleLineText
+    // for callers that need the full Bidi_Control set stripped.
     expect(sanitizeTerminalText(`a${ZWJ}b`)).toBe(`a${ZWJ}b`);
     expect(sanitizeTerminalText(`a${LRM}b`)).toBe(`a${LRM}b`);
+    expect(sanitizeTerminalText(`a${LRI}b${PDI}c`)).toBe(`a${LRI}b${PDI}c`);
+  });
+
+  it("escapes Unicode line and paragraph separators", () => {
+    // U+2028/U+2029 are official Unicode line-breaking characters that
+    // many renderers treat as real line breaks, even though they aren't
+    // \n or \r.
+    expect(sanitizeTerminalText(`a${LS}b`)).toBe("a\\u2028b");
+    expect(sanitizeTerminalText(`a${PS}b`)).toBe("a\\u2029b");
   });
 });
 
@@ -104,5 +120,18 @@ describe("sanitizeStrictSingleLineText", () => {
     expect(sanitizeStrictSingleLineText(`a${LRM}b`)).toBe("ab");
     expect(sanitizeStrictSingleLineText(`a${RLM}b`)).toBe("ab");
     expect(sanitizeStrictSingleLineText(`a${ALM}b`)).toBe("ab");
+  });
+
+  it("strips isolates too, unlike sanitizeTerminalText's narrower pattern", () => {
+    // A permission-prompt title or tool name has no legitimate need to
+    // embed a directionally-isolated phrase, and the stakes of a spoofed
+    // rendering are high enough that even the self-bounded isolates are
+    // removed here.
+    expect(sanitizeStrictSingleLineText(`a${LRI}b${PDI}c`)).toBe("abc");
+  });
+
+  it("escapes Unicode line and paragraph separators", () => {
+    expect(sanitizeStrictSingleLineText(`a${LS}b`)).toBe("a\\u2028b");
+    expect(sanitizeStrictSingleLineText(`a${PS}b`)).toBe("a\\u2029b");
   });
 });
